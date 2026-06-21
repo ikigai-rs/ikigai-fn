@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-fn"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library of reusable ikigai function endpoints (toUpper, reverseList, split, wrap, greet, echo, compose) — the first ikigai module crate, linkable into native and wasm32 hosts."
@@ -14,7 +14,7 @@ categories = ["wasm"]
 [dependencies]
 # The released kernel, consumed from crates.io — the SAME version the hosts use,
 # so a host links exactly one `ikigai-core` (no duplicate-crate type mismatch).
-ikigai-core = "0.1.5"
+ikigai-core = "0.1.13" # Invocation::fan_out — compose markers resolve concurrently on a scheduled kernel
 async-trait = "0.1"
 futures-util = "0.3"
 
