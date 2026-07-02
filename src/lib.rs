@@ -239,6 +239,89 @@ pub fn compose() -> Compose {
     Compose
 }
 
+/// `conditional`: the **lazy** sibling of [`Compose`]. Sources the `if` resource,
+/// reads it as a boolean, and sources — and returns — **only** `then` (true) or the
+/// optional `else` (false). The untaken branch is never invoked, so neither its
+/// work nor its golden threads enter the result. `if` is always evaluated; a false
+/// condition with no `else` yields an empty representation. Because each branch is
+/// taken via `inv.source`, dependencies propagate: if `if`'s value later flips (its
+/// thread is cut), the conditional recomputes and can take the other branch.
+pub struct Conditional;
+
+#[async_trait]
+impl Endpoint for Conditional {
+    async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        let cond_iri = parse_iri(inv.inline_str("if")?, "if")?;
+        let verdict = inv.source(&cond_iri).await?;
+        let taken = if as_bool(&verdict.bytes, &cond_iri)? {
+            "then"
+        } else {
+            "else"
+        };
+        match inv.inline_str(taken) {
+            Ok(uri) => inv.source(&parse_iri(uri, taken)?).await,
+            // `then` is required; a false condition with no `else` is a no-op.
+            Err(_) if taken == "else" => Ok(Representation::new(text_plain_utf8(), Vec::new())),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn name(&self) -> &str {
+        "conditional"
+    }
+
+    fn describe(&self) -> Description {
+        Description::new("conditional")
+            .title("Conditional")
+            .summary(
+                "Sources `if` and reads it as a boolean (true/false/1/0/yes/no), then sources \
+                 and returns ONLY `then` (when true) or the optional `else` (when false) — the \
+                 untaken branch is never invoked. A false condition with no `else` returns \
+                 nothing. The lazy counterpart to compose's eager fan-out.",
+            )
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+            .input(ArgSpec::new("if").summary("IRI of a resource whose value is a boolean"))
+            .input(ArgSpec::new("then").summary("IRI to source and return when `if` is true"))
+            .input(
+                ArgSpec::new("else")
+                    .summary("IRI to source and return when `if` is false (optional)")
+                    .optional(),
+            )
+    }
+}
+
+/// `conditional`: branch on a boolean resource, invoking only the taken side. See
+/// [`Conditional`].
+pub fn conditional() -> Conditional {
+    Conditional
+}
+
+/// Parse an argument that must be an IRI, reporting which argument if it isn't.
+fn parse_iri(s: &str, arg: &str) -> Result<Iri> {
+    Iri::parse(s).map_err(|e| Error::InvalidArgument {
+        name: arg.to_string(),
+        detail: format!("not an IRI: {e}"),
+    })
+}
+
+/// Interpret a resource's bytes as a boolean — lenient on common spellings, strict
+/// on anything else so a malformed condition can't silently mis-branch.
+fn as_bool(bytes: &[u8], iri: &Iri) -> Result<bool> {
+    let s = std::str::from_utf8(bytes)
+        .map_err(|_| Error::Endpoint(format!("conditional: `{}` is not UTF-8 text", iri.as_str())))?
+        .trim()
+        .to_ascii_lowercase();
+    match s.as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" | "" => Ok(false),
+        other => Err(Error::Endpoint(format!(
+            "conditional: `{}` returned {other:?}, not a boolean (true/false/1/0/yes/no)",
+            iri.as_str()
+        ))),
+    }
+}
+
 /// One piece of a scanned shape: literal text, or a marker body to resolve.
 enum Segment {
     Lit(String),
@@ -454,6 +537,7 @@ pub fn space() -> EndpointSpace {
         .bind(Exact::new("urn:fn:toUpper"), to_upper())
         .bind(Exact::new("urn:fn:reverseList"), reverse_list())
         .bind(Exact::new("urn:fn:compose"), compose())
+        .bind(Exact::new("urn:fn:conditional"), conditional())
         .bind(Exact::new("urn:demo:wrap"), wrap())
         .bind(Exact::new("urn:demo:split"), split())
         .bind(Exact::new("urn:demo:greet"), greet())
@@ -477,6 +561,92 @@ mod tests {
             request = request.with_arg(*key, ArgRef::Inline(value.to_vec()));
         }
         block_on(kernel.issue(request, &Capability::root())).unwrap()
+    }
+
+    // ---- conditional -------------------------------------------------------
+
+    /// A resource that returns a fixed body — a stand-in boolean or branch value.
+    fn constant(name: &'static str, body: &'static str) -> FnEndpoint {
+        FnEndpoint::new(name, move |_inv: &Invocation<'_>| {
+            Ok(Representation::new(
+                text_plain_utf8(),
+                body.as_bytes().to_vec(),
+            ))
+        })
+    }
+
+    fn cond_kernel() -> Kernel {
+        let space = space()
+            .bind(Exact::new("urn:test:true"), constant("t", "true"))
+            .bind(Exact::new("urn:test:false"), constant("f", "false"))
+            .bind(Exact::new("urn:test:maybe"), constant("m", "maybe"))
+            .bind(Exact::new("urn:test:A"), constant("a", "branch-A"))
+            .bind(Exact::new("urn:test:B"), constant("b", "branch-B"));
+        Kernel::new(Arc::new(space))
+    }
+
+    fn cond(
+        kernel: &Kernel,
+        if_u: &str,
+        then_u: &str,
+        else_u: Option<&str>,
+    ) -> Result<Representation> {
+        let mut req = Request::new(Verb::Source, Iri::parse("urn:fn:conditional").unwrap())
+            .with_arg("if", ArgRef::Inline(if_u.as_bytes().to_vec()))
+            .with_arg("then", ArgRef::Inline(then_u.as_bytes().to_vec()));
+        if let Some(e) = else_u {
+            req = req.with_arg("else", ArgRef::Inline(e.as_bytes().to_vec()));
+        }
+        block_on(kernel.issue(req, &Capability::root()))
+    }
+
+    #[test]
+    fn true_takes_the_then_branch() {
+        let out = cond(
+            &cond_kernel(),
+            "urn:test:true",
+            "urn:test:A",
+            Some("urn:test:B"),
+        )
+        .unwrap();
+        assert_eq!(out.bytes, b"branch-A");
+    }
+
+    #[test]
+    fn false_takes_the_else_branch() {
+        let out = cond(
+            &cond_kernel(),
+            "urn:test:false",
+            "urn:test:A",
+            Some("urn:test:B"),
+        )
+        .unwrap();
+        assert_eq!(out.bytes, b"branch-B");
+    }
+
+    #[test]
+    fn false_without_else_is_empty() {
+        let out = cond(&cond_kernel(), "urn:test:false", "urn:test:A", None).unwrap();
+        assert!(out.bytes.is_empty());
+    }
+
+    #[test]
+    fn the_untaken_branch_is_never_sourced() {
+        // `else` names a nonexistent resource; a true condition must not touch it
+        // (if it did, the kernel would fail to resolve it).
+        let out = cond(
+            &cond_kernel(),
+            "urn:test:true",
+            "urn:test:A",
+            Some("urn:does:not:exist"),
+        )
+        .unwrap();
+        assert_eq!(out.bytes, b"branch-A");
+    }
+
+    #[test]
+    fn a_non_boolean_condition_errors() {
+        assert!(cond(&cond_kernel(), "urn:test:maybe", "urn:test:A", None).is_err());
     }
 
     #[test]
