@@ -1,4 +1,4 @@
-# CI for ikigai-fn (urn:fn:compose etc.). Published crate linked into both the
+# CI for ikigai-fn (urn:iki:fn:compose etc.). Published crate linked into both the
 # native CLI and the browser web-demo, so a regression could ride into the
 # publish cascade or break a host's wasm build. Check both faces.
 name: ci

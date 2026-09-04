@@ -9,7 +9,7 @@
 //!
 //! Each `snake_case` constructor builds an endpoint whose `lowerCamelCase`
 //! identifier matches its name — [`to_upper`] builds the `toUpper` endpoint,
-//! conventionally resolved at `urn:fn:toUpper`. A host either pulls the
+//! conventionally resolved at `urn:iki:fn:toUpper`. A host either pulls the
 //! constructors and binds them at IRIs of its choosing, or mounts the whole
 //! library at its conventional IRIs with [`space`].
 
@@ -84,7 +84,7 @@ fn split_impl(inv: &Invocation<'_>) -> Result<Representation> {
 
 /// `split`: splits the `in` argument on commas (trimming each) into a
 /// newline-separated list — a *list producer* for the `..` map operator
-/// (`source urn:demo:split "a, b, c" .. urn:fn:toUpper`). The newline list is the
+/// (`source urn:demo:split "a, b, c" .. urn:iki:fn:toUpper`). The newline list is the
 /// same convention [`reverse_list`] reads.
 pub fn split() -> FnEndpoint {
     FnEndpoint::new("split", split_impl).with_description(
@@ -183,7 +183,7 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// `$a{<iri>}` marker in its (UTF-8 text) representation by resolving the
 /// embedded resource through the kernel and splicing the result in — recursively,
 /// so a transcluded shape may itself contain markers. A marker may carry inline
-/// arguments (`$a{urn:fn:toUpper?in="resource oriented computing"}`); a literal
+/// arguments (`$a{urn:iki:fn:toUpper?in="resource oriented computing"}`); a literal
 /// marker is written `$$a{…}` (a `$$` is a literal `$`).
 ///
 /// The `a` is for *asynchronous*: the markers at one level are forked and joined,
@@ -534,10 +534,10 @@ fn utf8_len(first: u8) -> usize {
 pub fn space() -> EndpointSpace {
     let echo_template = UriTemplate::parse("urn:demo:echo/{message}").expect("valid template");
     EndpointSpace::new()
-        .bind(Exact::new("urn:fn:toUpper"), to_upper())
-        .bind(Exact::new("urn:fn:reverseList"), reverse_list())
-        .bind(Exact::new("urn:fn:compose"), compose())
-        .bind(Exact::new("urn:fn:conditional"), conditional())
+        .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
+        .bind(Exact::new("urn:iki:fn:reverseList"), reverse_list())
+        .bind(Exact::new("urn:iki:fn:compose"), compose())
+        .bind(Exact::new("urn:iki:fn:conditional"), conditional())
         .bind(Exact::new("urn:demo:wrap"), wrap())
         .bind(Exact::new("urn:demo:split"), split())
         .bind(Exact::new("urn:demo:greet"), greet())
@@ -591,7 +591,7 @@ mod tests {
         then_u: &str,
         else_u: Option<&str>,
     ) -> Result<Representation> {
-        let mut req = Request::new(Verb::Source, Iri::parse("urn:fn:conditional").unwrap())
+        let mut req = Request::new(Verb::Source, Iri::parse("urn:iki:fn:conditional").unwrap())
             .with_arg("if", ArgRef::Inline(if_u.as_bytes().to_vec()))
             .with_arg("then", ArgRef::Inline(then_u.as_bytes().to_vec()));
         if let Some(e) = else_u {
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn to_upper_upper_cases_the_in_argument() {
         assert_eq!(
-            source(&kernel(), "urn:fn:toUpper", &[("in", b"hi there")]).bytes,
+            source(&kernel(), "urn:iki:fn:toUpper", &[("in", b"hi there")]).bytes,
             b"HI THERE"
         );
     }
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn reverse_list_reverses_newline_items() {
         assert_eq!(
-            source(&kernel(), "urn:fn:reverseList", &[("in", b"a\nb\nc")]).bytes,
+            source(&kernel(), "urn:iki:fn:reverseList", &[("in", b"a\nb\nc")]).bytes,
             b"c\nb\na"
         );
     }
@@ -720,8 +720,8 @@ mod compose_tests {
     /// A kernel binding `compose`, `toUpper`, and a `urn:data:page` shape.
     fn kernel(page: &'static str) -> Kernel {
         let space = EndpointSpace::new()
-            .bind(Exact::new("urn:fn:compose"), compose())
-            .bind(Exact::new("urn:fn:toUpper"), to_upper())
+            .bind(Exact::new("urn:iki:fn:compose"), compose())
+            .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
             .bind(Exact::new("urn:data:page"), shape(page));
         Kernel::new(Arc::new(space))
     }
@@ -729,7 +729,7 @@ mod compose_tests {
     fn compose_page(kernel: &Kernel) -> Representation {
         block_on(
             kernel.issue(
-                Request::new(Verb::Source, Iri::parse("urn:fn:compose").unwrap())
+                Request::new(Verb::Source, Iri::parse("urn:iki:fn:compose").unwrap())
                     .with_arg("src", ArgRef::Inline(b"urn:data:page".to_vec())),
                 &Capability::root(),
             ),
@@ -739,31 +739,34 @@ mod compose_tests {
 
     #[test]
     fn expands_a_marker_with_a_quoted_argument() {
-        let rep = compose_page(&kernel(r#"<h1>$a{urn:fn:toUpper?in="hi there"}</h1>"#));
+        let rep = compose_page(&kernel(r#"<h1>$a{urn:iki:fn:toUpper?in="hi there"}</h1>"#));
         assert_eq!(rep.bytes, b"<h1>HI THERE</h1>".to_vec());
     }
 
     #[test]
     fn preserves_the_source_media_type() {
-        let rep = compose_page(&kernel("<p>$a{urn:fn:toUpper?in=x}</p>"));
+        let rep = compose_page(&kernel("<p>$a{urn:iki:fn:toUpper?in=x}</p>"));
         assert_eq!(rep.repr_type.media_type, "text/html");
     }
 
     #[test]
     fn a_double_dollar_keeps_a_marker_literal() {
-        let rep = compose_page(&kernel("show $$a{urn:fn:toUpper?in=x} verbatim"));
-        assert_eq!(rep.bytes, b"show $a{urn:fn:toUpper?in=x} verbatim".to_vec());
+        let rep = compose_page(&kernel("show $$a{urn:iki:fn:toUpper?in=x} verbatim"));
+        assert_eq!(
+            rep.bytes,
+            b"show $a{urn:iki:fn:toUpper?in=x} verbatim".to_vec()
+        );
     }
 
     #[test]
     fn recurses_into_transcluded_shapes() {
         let space = EndpointSpace::new()
-            .bind(Exact::new("urn:fn:compose"), compose())
-            .bind(Exact::new("urn:fn:toUpper"), to_upper())
+            .bind(Exact::new("urn:iki:fn:compose"), compose())
+            .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
             .bind(Exact::new("urn:data:page"), shape("[$a{urn:data:inner}]"))
             .bind(
                 Exact::new("urn:data:inner"),
-                shape("$a{urn:fn:toUpper?in=hi}"),
+                shape("$a{urn:iki:fn:toUpper?in=hi}"),
             );
         let kernel = Kernel::new(Arc::new(space));
         let rep = compose_page(&kernel);
@@ -772,14 +775,14 @@ mod compose_tests {
 
     #[test]
     fn a_composite_of_cacheable_parts_is_cacheable() {
-        let rep = compose_page(&kernel("<p>$a{urn:fn:toUpper?in=hi}</p>"));
+        let rep = compose_page(&kernel("<p>$a{urn:iki:fn:toUpper?in=hi}</p>"));
         assert_eq!(rep.expiry, Expiry::Never);
     }
 
     #[test]
     fn text_around_and_between_markers_is_preserved() {
         let rep = compose_page(&kernel(
-            "a $a{urn:fn:toUpper?in=b} c $a{urn:fn:toUpper?in=d} e",
+            "a $a{urn:iki:fn:toUpper?in=b} c $a{urn:iki:fn:toUpper?in=d} e",
         ));
         assert_eq!(rep.bytes, b"a B c D e".to_vec());
     }
