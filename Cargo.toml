@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-fn"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library of reusable ikigai function endpoints (toUpper, reverseList, split, wrap, greet, echo, compose, conditional) — the first ikigai module crate, linkable into native and wasm32 hosts."
