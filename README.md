@@ -25,6 +25,11 @@ an in-browser WebAssembly host alike (no WASI required).
 Each `snake_case` constructor builds an endpoint whose `lowerCamelCase`
 identifier matches its name.
 
+Every input declares its datatype (`xsd:string` for text, `xsd:anyURI` for the
+IRI-valued `src`/`if`/`then`/`else`), so type-driven selection — `select_action`,
+`urn:kernel:actions types=` — offers these endpoints for the values you hold. A
+test pins that no input in `space()` is left unclassed.
+
 ## Usage
 
 Mount the whole library at its conventional IRIs and chain your own bindings on

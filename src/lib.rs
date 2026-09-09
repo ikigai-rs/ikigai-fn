@@ -32,6 +32,17 @@ fn text_plain_utf8() -> ReprType {
 /// The same media type as a description-output string.
 const TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
 
+/// The datatype every text-valued input declares. `select_action` and `urn:kernel:actions
+/// types=` match on [`ArgSpec::class`] and nothing else: an input WITHOUT a class is not
+/// "untyped", it is invisible to type-driven selection (a required input with no class
+/// makes the whole endpoint un-inferable). So every input in [`space`] carries one, and a
+/// test pins that.
+const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+
+/// The datatype of an input whose value is the IRI of another resource (compose's `src`,
+/// conditional's `if`/`then`/`else`) — the argument names a resource, it does not carry one.
+const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
+
 // --- simple, idempotent, perfectly cacheable functions --------------------
 
 fn to_upper_impl(inv: &Invocation<'_>) -> Result<Representation> {
@@ -47,7 +58,11 @@ pub fn to_upper() -> FnEndpoint {
             .summary("Upper-cases the UTF-8 text supplied in the `in` argument.")
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("in").summary("the text to upper-case"))
+            .input(
+                ArgSpec::new("in")
+                    .summary("the text to upper-case")
+                    .class(XSD_STRING),
+            )
             .output(TEXT_PLAIN_UTF8),
     )
 }
@@ -67,7 +82,11 @@ pub fn reverse_list() -> FnEndpoint {
             .summary("Reverses the order of newline-separated items in the `in` argument.")
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("in").summary("newline-separated items"))
+            .input(
+                ArgSpec::new("in")
+                    .summary("newline-separated items")
+                    .class(XSD_STRING),
+            )
             .output(TEXT_PLAIN_UTF8),
     )
 }
@@ -93,7 +112,11 @@ pub fn split() -> FnEndpoint {
             .summary("Splits the `in` argument on commas into newline-separated items.")
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("in").summary("comma-separated items"))
+            .input(
+                ArgSpec::new("in")
+                    .summary("comma-separated items")
+                    .class(XSD_STRING),
+            )
             .output(TEXT_PLAIN_UTF8),
     )
 }
@@ -114,7 +137,11 @@ pub fn wrap() -> FnEndpoint {
             .summary("Surrounds the `text` argument with square brackets.")
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("text").summary("the text to wrap"))
+            .input(
+                ArgSpec::new("text")
+                    .summary("the text to wrap")
+                    .class(XSD_STRING),
+            )
             .output(TEXT_PLAIN_UTF8),
     )
 }
@@ -138,8 +165,16 @@ pub fn greet() -> FnEndpoint {
             .summary("Combines `greeting` and `name` into a greeting.")
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("greeting").summary("the salutation, e.g. Hello"))
-            .input(ArgSpec::new("name").summary("who to greet"))
+            .input(
+                ArgSpec::new("greeting")
+                    .summary("the salutation, e.g. Hello")
+                    .class(XSD_STRING),
+            )
+            .input(
+                ArgSpec::new("name")
+                    .summary("who to greet")
+                    .class(XSD_STRING),
+            )
             .output(TEXT_PLAIN_UTF8),
     )
 }
@@ -165,6 +200,7 @@ pub fn echo() -> FnEndpoint {
             .input(
                 ArgSpec::new("message")
                     .summary("the text to echo, captured from the path by the resolving grammar")
+                    .class(XSD_STRING)
                     .binding(),
             )
             .output(TEXT_PLAIN_UTF8),
@@ -229,7 +265,11 @@ impl Endpoint for Compose {
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("src").summary("the IRI of the shape resource to compose"))
+            .input(
+                ArgSpec::new("src")
+                    .summary("the IRI of the shape resource to compose")
+                    .class(XSD_ANY_URI),
+            )
             .output("text/html")
     }
 }
@@ -281,11 +321,20 @@ impl Endpoint for Conditional {
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
-            .input(ArgSpec::new("if").summary("IRI of a resource whose value is a boolean"))
-            .input(ArgSpec::new("then").summary("IRI to source and return when `if` is true"))
+            .input(
+                ArgSpec::new("if")
+                    .summary("IRI of a resource whose value is a boolean")
+                    .class(XSD_ANY_URI),
+            )
+            .input(
+                ArgSpec::new("then")
+                    .summary("IRI to source and return when `if` is true")
+                    .class(XSD_ANY_URI),
+            )
             .input(
                 ArgSpec::new("else")
                     .summary("IRI to source and return when `if` is false (optional)")
+                    .class(XSD_ANY_URI)
                     .optional(),
             )
     }
@@ -697,6 +746,76 @@ mod tests {
     #[test]
     fn echo_returns_the_captured_binding() {
         assert_eq!(source(&kernel(), "urn:demo:echo/ping", &[]).bytes, b"ping");
+    }
+
+    // ---- self-description ---------------------------------------------------
+
+    /// Every input declared in `space()` carries a class. `select_action` and
+    /// `urn:kernel:actions types=` match on `ArgSpec::class` alone, so an input without one
+    /// is not "untyped" — it makes its endpoint invisible to type-driven selection (and a
+    /// REQUIRED input without one makes the endpoint un-inferable). Walks the live space
+    /// through the kernel rather than a hand-kept list, so a new binding is covered the
+    /// moment it is bound, and covers per-verb `ActionSpec` inputs for the day one appears.
+    #[test]
+    fn every_declared_input_has_a_class() {
+        let kernel = Kernel::new(Arc::new(space()));
+        let entries = kernel.entries().expect("space() is enumerable");
+        assert!(!entries.is_empty());
+        let mut untyped = Vec::new();
+        for entry in &entries {
+            let description = kernel
+                .describe_pattern(&entry.pattern)
+                .unwrap_or_else(|| panic!("{} describes itself", entry.pattern));
+            let flat = description.inputs.iter();
+            let per_action = description.actions.iter().flat_map(|a| a.inputs.iter());
+            for input in flat.chain(per_action) {
+                if input.class.is_none() {
+                    untyped.push(format!("{}#{}", entry.pattern, input.name));
+                }
+            }
+        }
+        assert!(untyped.is_empty(), "inputs without a class: {untyped:?}");
+    }
+
+    /// The point of declaring the classes: type-driven selection now OFFERS these endpoints.
+    /// "I hold a string — what can I do with it?" answers with the text functions; "I hold
+    /// an IRI" answers with the two that take one. Before, every answer was empty.
+    #[test]
+    fn typed_selection_offers_the_text_and_iri_functions() {
+        use ikigai_core::select_action;
+        let space = space();
+        let names = |present: &[&str]| -> Vec<String> {
+            select_action(&space, present)
+                .into_iter()
+                .map(|m| m.endpoint)
+                .collect()
+        };
+        // `ActionMatch::endpoint` is the bound IRI — the thing a caller would invoke.
+        let strings = names(&[XSD_STRING]);
+        for expected in [
+            "urn:iki:fn:toUpper",
+            "urn:iki:fn:reverseList",
+            "urn:demo:split",
+            "urn:demo:wrap",
+            "urn:demo:greet",
+            "urn:demo:echo/{message}",
+        ] {
+            assert!(
+                strings.contains(&expected.to_string()),
+                "{expected} in {strings:?}"
+            );
+        }
+        let iris = names(&[XSD_ANY_URI]);
+        for expected in ["urn:iki:fn:compose", "urn:iki:fn:conditional"] {
+            assert!(
+                iris.contains(&expected.to_string()),
+                "{expected} in {iris:?}"
+            );
+        }
+        assert!(
+            !iris.contains(&"urn:iki:fn:toUpper".to_string()),
+            "{iris:?}"
+        );
     }
 }
 
