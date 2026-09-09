@@ -756,10 +756,14 @@ mod tests {
     /// REQUIRED input without one makes the endpoint un-inferable). Walks the live space
     /// through the kernel rather than a hand-kept list, so a new binding is covered the
     /// moment it is bound, and covers per-verb `ActionSpec` inputs for the day one appears.
+    /// Enumerates THIS space's bindings, not the kernel's: `Kernel::entries` also lists the
+    /// kernel's own `urn:kernel:*` builtins, which are core's to type, not this crate's.
     #[test]
     fn every_declared_input_has_a_class() {
-        let kernel = Kernel::new(Arc::new(space()));
-        let entries = kernel.entries().expect("space() is enumerable");
+        use ikigai_core::Space;
+        let space = space();
+        let entries = space.entries().expect("space() is enumerable");
+        let kernel = Kernel::new(Arc::new(space));
         assert!(!entries.is_empty());
         let mut untyped = Vec::new();
         for entry in &entries {
