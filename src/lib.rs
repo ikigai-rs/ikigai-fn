@@ -286,23 +286,40 @@ pub fn compose() -> Compose {
 /// condition with no `else` yields an empty representation. Because each branch is
 /// taken via `inv.source`, dependencies propagate: if `if`'s value later flips (its
 /// thread is cut), the conditional recomputes and can take the other branch.
+///
+/// The contract is checked before the branch is chosen: `then` is required whatever
+/// `if` says, and `if`/`then`/`else` must each be an IRI whether or not they end up
+/// sourced. Only the SOURCING is lazy.
 pub struct Conditional;
 
 #[async_trait]
 impl Endpoint for Conditional {
     async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        // The whole contract is held BEFORE the branch is chosen: `then` is required
+        // and every IRI-classed input must parse as one, whichever side ends up taken.
+        // Laziness is about what gets SOURCED, not about which arguments are read — a
+        // `then` demanded only when `if` is true is "declared required, actually
+        // optional", and an `else` parsed only when taken is a class enforced on one
+        // path (ikigai-conformance PENDING #49, #118).
         let cond_iri = parse_iri(inv.inline_str("if")?, "if")?;
-        let verdict = inv.source(&cond_iri).await?;
-        let taken = if as_bool(&verdict.bytes, &cond_iri)? {
-            "then"
-        } else {
-            "else"
+        let then_iri = parse_iri(inv.inline_str("then")?, "then")?;
+        let else_iri = match inv.inline_str("else") {
+            Ok(uri) => Some(parse_iri(uri, "else")?),
+            Err(Error::MissingArgument(_)) => None,
+            Err(e) => return Err(e),
         };
-        match inv.inline_str(taken) {
-            Ok(uri) => inv.source(&parse_iri(uri, taken)?).await,
-            // `then` is required; a false condition with no `else` is a no-op.
-            Err(_) if taken == "else" => Ok(Representation::new(text_plain_utf8(), Vec::new())),
-            Err(e) => Err(e),
+        let verdict = inv.source(&cond_iri).await?;
+        if as_bool(&verdict.bytes, &cond_iri)? {
+            inv.source(&then_iri).await
+        } else {
+            match else_iri {
+                Some(iri) => inv.source(&iri).await,
+                // A false condition with no `else` is a no-op. The empty result is a
+                // function of `if` alone, so it is marked cacheable: the kernel folds
+                // `if`'s expiry and threads in, and a cut of `if` recomputes it — the
+                // same rule as the taken branches, no less.
+                None => Ok(Representation::new(text_plain_utf8(), Vec::new()).cacheable()),
+            }
         }
     }
 
