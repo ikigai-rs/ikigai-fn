@@ -30,6 +30,19 @@ IRI-valued `src`/`if`/`then`/`else`), so type-driven selection — `select_actio
 `urn:kernel:actions types=` — offers these endpoints for the values you hold. A
 test pins that no input in `space()` is left unclassed.
 
+## Conformance
+
+`space()` passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
+(`tests/conformance.rs`): every input classed, every result cacheable and held to
+it, no capability enforced that is not declared. The six text functions are pure
+functions of their arguments (an empty golden-thread set, by design); `compose`
+and `conditional` are exactly as cacheable as the resources they resolve — a shape
+served under a golden thread makes the composite cacheable under that thread and a
+cut recomputes it, a shape served live makes it uncacheable. The test pins both.
+The two `lowerCamelCase` ids (`toUpper`, `reverseList`) are the known exception to
+the kebab-case naming convention: they are live MCP tool names, and move only in
+the coordinated rename wave, so the test records them as the exact `NAMES` set.
+
 ## Usage
 
 Mount the whole library at its conventional IRIs and chain your own bindings on
