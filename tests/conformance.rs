@@ -59,13 +59,26 @@
 //!   input is an `InvalidArgument` naming that input, on the UNTAKEN branch too;
 //!   non-UTF-8 bytes in an `xsd:string` input likewise
 //!   ([`classed_inputs_are_held_to_their_class`]).
+//! - **The served type follows the SOURCE** — what the `OUTPUTS` waiver gives up
+//!   ([`the_served_type_follows_the_source`]). Neither resolver has a media type of
+//!   its own: `compose` returns the shape's `repr_type` unchanged and `conditional`
+//!   returns the taken branch's representation as it came back from `inv.source`.
+//!   `outputs` is a closed list in core's `Description` with no pass-through
+//!   spelling (core PENDING §20 — the condition for removing both waivers), so the
+//!   declaration cannot be made true and is waived per CHECK, never per endpoint
+//!   ([`Suite::opt_out`] would drop `ENFORCED` and `CACHEABLE` with it). ⚠ Both
+//!   would otherwise be silenceable by a declaration that is merely what the
+//!   fixture produced: `compose` declared `text/html` through 0.2.1 and PASSED this
+//!   walk over an HTML shape, and `conditional` would pass declaring `text/plain`
+//!   over these `text/plain` branches. The hand test varies the source's type, so a
+//!   constant declaration is red in both directions.
 //! - **An inherited gate passes through** (PENDING #87): `conditional` declares no
 //!   capability, correctly — it enforces none of its own. A condition resource that
 //!   is gated refuses under no grants with a typed `Denied`, and `conditional`
 //!   propagates it unchanged rather than flattening it
 //!   ([`a_gate_on_the_condition_passes_through_as_denied`]).
 //!
-//! No opt-outs, no module namespace (there is no RDF face).
+//! No whole-endpoint opt-outs, no module namespace (there is no RDF face).
 
 use ikigai_conformance::{Check, Finding, Fixture, Suite};
 use ikigai_core::{
@@ -79,8 +92,19 @@ use std::sync::{Arc, RwLock};
 /// description id.
 const PURE: [&str; 6] = ["toUpper", "reverseList", "split", "wrap", "greet", "echo"];
 
-/// The two that resolve other resources — as cacheable as what they resolve.
+/// The two that resolve other resources — as cacheable as what they resolve, and
+/// serving the media type of what they resolve (see [`PASS_THROUGH_REASON`]).
 const RESOLVERS: [&str; 2] = ["compose", "conditional"];
+
+/// Why `OUTPUTS` is waived for both resolvers, printed in the report beside the
+/// findings so the waived rule and its reason travel together.
+const PASS_THROUGH_REASON: &str =
+    "pass-through: the served type is the resolved resource's, not this endpoint's — \
+     compose returns the shape's repr_type and conditional the taken branch's, so any \
+     fixed `.output(…)` is a lie that happens to pass over today's fixture. `outputs` \
+     is a closed list with no pass-through spelling (ikigai-core PENDING §20 — the \
+     condition for removing this waiver); pinned by hand in \
+     `the_served_type_follows_the_source`";
 
 /// The ids that are not kebab-case: exactly the coordinated-wave exceptions.
 const CAMEL_CASE: [&str; 2] = ["toUpper", "reverseList"];
@@ -232,6 +256,9 @@ fn conforms() {
         .map(|id| id.to_string())
         .chain(fixture_ids.iter().cloned())
         .fold(suite, |suite, id| suite.cacheable(id));
+    let suite = RESOLVERS.iter().fold(suite, |suite, id| {
+        suite.opt_out_check(*id, Check::Outputs, PASS_THROUGH_REASON)
+    });
     let suite = suite
         .fixture(Fixture::new("compose", Verb::Source).arg("src", SHAPE_IRI))
         .fixture(
@@ -273,6 +300,26 @@ fn conforms() {
     assert_eq!(
         report.actions, declared,
         "one Source action per endpoint: {report}"
+    );
+
+    // Exactly one check is waived, for exactly the two pass-through resolvers. A
+    // third waiver, or the same waiver spreading to a fixture (each of which serves
+    // a type it declares and is checked), is a gate quietly covering less.
+    assert!(
+        report.declared.opted_out.is_empty(),
+        "no endpoint is opted out wholesale — that would drop ENFORCED and CACHEABLE \
+         with it: {report}"
+    );
+    let waived: Vec<(&str, Check)> = report
+        .declared
+        .opted_out_checks
+        .iter()
+        .map(|o| (o.endpoint.as_str(), o.check))
+        .collect();
+    let expected: Vec<(&str, Check)> = RESOLVERS.iter().map(|id| (*id, Check::Outputs)).collect();
+    assert_eq!(
+        waived, expected,
+        "OUTPUTS is waived for the two resolvers and nothing else: {report}"
     );
 }
 
@@ -384,6 +431,76 @@ fn over_live_resources_nothing_is_cached() {
     assert!(!kernel.is_cached(&conditional_request(true), &Capability::root()));
     *flag.write().expect("flag lock") = "false";
     assert_eq!(text(&kernel, conditional_request(true)), "branch-else");
+}
+
+// ---- what the OUTPUTS waiver gives up ------------------------------------------
+
+/// The served media type is the RESOLVED RESOURCE'S, whatever that is — the reason
+/// neither resolver declares an output, asserted over three different source types
+/// so a constant declaration could not satisfy it. Each type gets its own space, so
+/// the walk in [`conforms`] is untouched; the flag stays `text/plain` throughout,
+/// because the condition's type is read, not returned.
+#[test]
+fn the_served_type_follows_the_source() {
+    for media_type in ["text/html", "text/turtle", "application/json"] {
+        let flag = Arc::new(RwLock::new("true"));
+        let space = ikigai_fn::space()
+            .bind(
+                Exact::new(SHAPE_IRI),
+                resource(
+                    SHAPE_IRI,
+                    media_type,
+                    Arc::new(RwLock::new(SHAPE)),
+                    Some(SHAPE_IRI),
+                ),
+            )
+            .bind(
+                Exact::new(FLAG_IRI),
+                resource(FLAG_IRI, "text/plain", Arc::clone(&flag), Some(FLAG_IRI)),
+            )
+            .bind(
+                Exact::new(THEN_IRI),
+                resource(
+                    THEN_IRI,
+                    media_type,
+                    Arc::new(RwLock::new("branch-then")),
+                    Some(THEN_IRI),
+                ),
+            );
+        let kernel = Kernel::new(Arc::new(space));
+
+        let composed = issue(&kernel, compose_request()).expect("compose resolves");
+        assert_eq!(
+            composed.repr_type.media_type, media_type,
+            "compose serves the shape's type"
+        );
+        assert_eq!(
+            composed.bytes, b"<p>HI</p>",
+            "and expands the same whatever the label: {media_type}"
+        );
+
+        let branch = issue(&kernel, conditional_request(false)).expect("conditional resolves");
+        assert_eq!(
+            branch.repr_type.media_type, media_type,
+            "conditional serves the taken branch's type"
+        );
+        assert_eq!(branch.bytes, b"branch-then");
+
+        // The ONE representation `conditional` authors itself: a false condition with
+        // no `else`. It is `text/plain; charset=utf-8` whatever the branches are — the
+        // whole case for declaring `text/plain`, and it describes only this no-op.
+        // Declared, it would pass the walk over a `text/plain` fixture while telling a
+        // consumer that the Turtle branch above comes back as plain text.
+        *flag.write().expect("flag lock") = "false";
+        kernel.cut(FLAG_IRI);
+        let empty = issue(&kernel, conditional_request(false)).expect("the no-op resolves");
+        assert!(empty.bytes.is_empty());
+        assert_eq!(empty.repr_type.media_type, "text/plain");
+        assert_eq!(
+            empty.repr_type.params.get("charset").map(String::as_str),
+            Some("utf-8")
+        );
+    }
 }
 
 // ---- what the suite cannot see -------------------------------------------------

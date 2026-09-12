@@ -43,6 +43,16 @@ The two `lowerCamelCase` ids (`toUpper`, `reverseList`) are the known exception 
 the kebab-case naming convention: they are live MCP tool names, and move only in
 the coordinated rename wave, so the test records them as the exact `NAMES` set.
 
+One check is waived, and only for the two resolvers: `OUTPUTS` asks an endpoint to
+declare the media type it serves, and neither `compose` nor `conditional` has one
+of its own — each returns the resource it resolved, so the served type is the
+shape's or the taken branch's. `outputs` is a closed list with no pass-through
+spelling, so the declaration cannot be made true; the waiver is per CHECK
+(`Suite::opt_out_check`), never per endpoint, and what it gives up is asserted by
+hand over three different source types. `compose` declared `text/html` through
+0.2.1 — true of the shapes we happened to write, false as a contract, and it
+passed the walk because the fixture was HTML.
+
 ## Usage
 
 Mount the whole library at its conventional IRIs and chain your own bindings on
