@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-fn"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library of reusable ikigai function endpoints (toUpper, reverseList, split, wrap, greet, echo, compose, conditional) — the first ikigai module crate, linkable into native and wasm32 hosts."
@@ -21,5 +21,7 @@ futures-util = "0.3"
 [dev-dependencies]
 futures = "0.3"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
-# endpoint and reports every violation at once. 0.1.0 is the first release.
-ikigai-conformance = "0.1.0"
+# endpoint and reports every violation at once. 0.2.0 adds `Suite::opt_out_check`,
+# the per-CHECK waiver the two pass-through resolvers need (a whole-endpoint
+# `opt_out` would drop ENFORCED and CACHEABLE with it).
+ikigai-conformance = "0.2.0"

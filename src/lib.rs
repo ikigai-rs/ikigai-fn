@@ -270,7 +270,15 @@ impl Endpoint for Compose {
                     .summary("the IRI of the shape resource to compose")
                     .class(XSD_ANY_URI),
             )
-            .output("text/html")
+        // No `.output(…)`. `invoke` returns the SHAPE's `repr_type` unchanged, so the
+        // served type is the source's and not compose's to declare: over an HTML shape
+        // it serves HTML, over a Turtle one Turtle. It declared `text/html` through
+        // 0.2.1 — true of the shapes we happened to write, false as a contract, and a
+        // declaration that is merely what today's fixture produced is a lie that passes
+        // every check. `outputs` is a closed list in core's `Description` with no
+        // pass-through spelling (core PENDING §20); until there is one, announcing
+        // nothing is the only honest option, and `tests/conformance.rs` waives
+        // `Check::Outputs` here and pins the pass-through by hand.
     }
 }
 
@@ -354,6 +362,14 @@ impl Endpoint for Conditional {
                     .class(XSD_ANY_URI)
                     .optional(),
             )
+        // No `.output(…)`, for compose's reason: a taken branch is returned from
+        // `inv.source` unchanged, so the served type is the branch's. The one
+        // representation this endpoint authors itself — a false condition with no
+        // `else` — is `text/plain; charset=utf-8`, and declaring THAT would silence
+        // `Check::Outputs` (it matches what the walk's fixture happens to serve) while
+        // telling a consumer that a Turtle `then` comes back as plain text. Waived and
+        // pinned by hand in `tests/conformance.rs`; core PENDING §20 is the condition
+        // for replacing both waivers with a real pass-through spelling.
     }
 }
 
@@ -847,11 +863,14 @@ mod compose_tests {
     use ikigai_core::{Capability, Expiry, Kernel};
     use std::sync::Arc;
 
-    /// A shape resource: returns a fixed `text/html` body (which may carry markers).
-    fn shape(html: &'static str) -> FnEndpoint {
+    /// A shape resource: returns a fixed body (which may carry markers) under the
+    /// given media type. The type is a parameter because `compose` passes it
+    /// through — a shape fixed at `text/html` cannot tell "mirrors the source" apart
+    /// from "always emits HTML".
+    fn shape(media_type: &'static str, body: &'static str) -> FnEndpoint {
         FnEndpoint::new("shape", move |_inv: &Invocation<'_>| {
             Ok(
-                Representation::new(ReprType::new("text/html"), html.as_bytes().to_vec())
+                Representation::new(ReprType::new(media_type), body.as_bytes().to_vec())
                     .cacheable(),
             )
         })
@@ -859,10 +878,15 @@ mod compose_tests {
 
     /// A kernel binding `compose`, `toUpper`, and a `urn:data:page` shape.
     fn kernel(page: &'static str) -> Kernel {
+        typed_kernel("text/html", page)
+    }
+
+    /// The same, with the shape's media type chosen by the caller.
+    fn typed_kernel(media_type: &'static str, page: &'static str) -> Kernel {
         let space = EndpointSpace::new()
             .bind(Exact::new("urn:iki:fn:compose"), compose())
             .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
-            .bind(Exact::new("urn:data:page"), shape(page));
+            .bind(Exact::new("urn:data:page"), shape(media_type, page));
         Kernel::new(Arc::new(space))
     }
 
@@ -883,10 +907,19 @@ mod compose_tests {
         assert_eq!(rep.bytes, b"<h1>HI THERE</h1>".to_vec());
     }
 
+    /// Whatever the shape is labelled, the composite carries that label: the type is
+    /// the source's, which is why `describe` declares none. Before 0.2.2 this test
+    /// ran over a shape hard-coded to `text/html` and so could not have failed if
+    /// compose had emitted a constant `text/html` — the very thing it claims to rule
+    /// out, and the thing `describe` then asserted.
     #[test]
     fn preserves_the_source_media_type() {
-        let rep = compose_page(&kernel("<p>$a{urn:iki:fn:toUpper?in=x}</p>"));
-        assert_eq!(rep.repr_type.media_type, "text/html");
+        for media_type in ["text/html", "text/turtle", "application/json"] {
+            let kernel = typed_kernel(media_type, "<p>$a{urn:iki:fn:toUpper?in=x}</p>");
+            let rep = compose_page(&kernel);
+            assert_eq!(rep.repr_type.media_type, media_type);
+            assert_eq!(rep.bytes, b"<p>X</p>".to_vec(), "{media_type}");
+        }
     }
 
     #[test]
@@ -903,10 +936,13 @@ mod compose_tests {
         let space = EndpointSpace::new()
             .bind(Exact::new("urn:iki:fn:compose"), compose())
             .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
-            .bind(Exact::new("urn:data:page"), shape("[$a{urn:data:inner}]"))
+            .bind(
+                Exact::new("urn:data:page"),
+                shape("text/html", "[$a{urn:data:inner}]"),
+            )
             .bind(
                 Exact::new("urn:data:inner"),
-                shape("$a{urn:iki:fn:toUpper?in=hi}"),
+                shape("text/html", "$a{urn:iki:fn:toUpper?in=hi}"),
             );
         let kernel = Kernel::new(Arc::new(space));
         let rep = compose_page(&kernel);
