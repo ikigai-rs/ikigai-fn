@@ -207,28 +207,108 @@ pub fn echo() -> FnEndpoint {
     )
 }
 
-// --- compose: recursive `$a{<iri>}` resource transclusion -----------------
+// --- compose: a request-template language over `$a{…}`, `$r{…}` and `$h{…}` ----
 
 /// Maximum `$a{}` expansion depth — a backstop against a shape that transcludes
 /// itself, directly or through a cycle.
 const COMPOSE_MAX_DEPTH: usize = 32;
 
-/// `compose`: recursive resource transclusion.
+/// `compose`: a request-template language — NetKernel's TRL, resolved through the
+/// kernel.
 ///
-/// Sources the resource named by the `src` argument and expands every
-/// `$a{<iri>}` marker in its (UTF-8 text) representation by resolving the
-/// embedded resource through the kernel and splicing the result in — recursively,
-/// so a transcluded shape may itself contain markers. A marker may carry inline
-/// arguments (`$a{urn:iki:fn:toUpper?in="resource oriented computing"}`); a literal
-/// marker is written `$$a{…}` (a `$$` is a literal `$`).
+/// Sources the template named by the `src` argument and replaces every marker in its
+/// (UTF-8 text) representation with the resource the marker names. There are three
+/// markers, one for each way of splicing what comes back:
 ///
-/// The `a` is for *asynchronous*: the markers at one level are forked and joined,
-/// so a kernel driven on a concurrent executor resolves them simultaneously,
+/// | marker | splices | the spliced text's own markers |
+/// |---|---|---|
+/// | `$a{<iri>}` | as it is — trusted markup | **expanded**: a template including a template |
+/// | `$r{<iri>}` | as it is — trusted markup | left alone (terminated) |
+/// | `$h{<iri>}` | as TEXT, HTML-escaped | left alone (terminated) |
+///
+/// A marker may carry inline arguments (`$a{urn:iki:fn:toUpper?in="resource oriented
+/// computing"}`); a literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
+///
+/// **Escaping.** `$h` replaces `&`, `<`, `>`, `"` and `'` with `&amp;`, `&lt;`, `&gt;`,
+/// `&quot;` and `&#39;`, so its output is safe in element text and inside an attribute
+/// value quoted with either quote. It is not safe in an UNQUOTED attribute value (a space
+/// ends one), and no escaping makes a URL attribute safe from a `javascript:` value: quote
+/// every attribute, and put values, not whole URLs, in `href`.
+///
+/// **Terminate.** Only `$a` expands what it splices. Content read from an atom — user
+/// data, a peer, a file — goes in through `$h` (or `$r`, for markup you trust), so a
+/// stored `$a{urn:example:secret}` renders as those characters and resolves nothing. `$a`
+/// is how a template opts in to recursion, and it re-expands EVERYTHING it splices —
+/// including the output of a nested `compose`, whose `$$` escapes have already
+/// collapsed to `$`. Splice a composed view with `$r`.
+///
+/// **Template arguments.** Every argument of the request other than `src` — and, for
+/// [`compose_over`], every variable its name captured, which wins over an argument of
+/// the same name — is a template argument, and a marker names one as `{name}`:
+///
+/// - in the IRI its value is percent-encoded, as RFC 6570 expands a simple variable, so
+///   an argument can never add a path segment, a query or an argument:
+///   `$h{urn:example:cell:{x}:{y}}`;
+/// - in an unquoted argument value it IS the value, verbatim, and still one value:
+///   `$r{urn:iki:fn:toUpper?in={name}}`;
+/// - in a quoted value it is literal text: `in="{name}"` passes six characters.
+///
+/// A marker whose body is only an argument splices the value and resolves nothing:
+/// `id="square-$h{{x}}"`. An argument is a value and never a template, so `$a{{x}}` is
+/// refused. An argument the request does not carry is [`Error::MissingArgument`].
+///
+/// **Per-marker errors.** By default a marker that fails fails the whole compose, with
+/// the marker's own typed error (a `NotFound` stays a `NotFound`). A marker may instead
+/// name fallbacks, tried left to right until one succeeds — `$h{urn:example:title ||
+/// urn:example:untitled}`, or `$h{{title} || urn:example:untitled}` for a missing
+/// argument — and the last alternative's error is the one reported. A fallback covers
+/// everything that can go wrong with its marker (resolution, a missing argument, a `$a`
+/// whose own markers fail); a marker that cannot be parsed fails the whole compose. The
+/// kernel decides what a fallback is worth caching: one standing in for an absent
+/// resource is cached and cut when the resource appears, and one standing in for a
+/// denial or any other failure makes the composite uncacheable.
+///
+/// The `a` is for *asynchronous*: the first alternatives of a level's markers are forked
+/// and joined, so a kernel driven on a concurrent executor resolves them simultaneously,
 /// while a single-threaded executor (the browser, for now) resolves them in turn.
 ///
-/// The output mirrors the source's media type. It declares itself cacheable, so
-/// the kernel keeps it cacheable only while every transcluded part is — one
-/// volatile constituent makes the whole composite volatile, automatically.
+/// The output mirrors the source's media type. It declares itself cacheable, so the
+/// kernel keeps it cacheable only while every part it read is — one volatile constituent
+/// makes the whole composite volatile, automatically.
+///
+/// ```
+/// use std::sync::Arc;
+/// use futures::executor::block_on;
+/// use ikigai_core::{
+///     ArgRef, Capability, EndpointSpace, Exact, FnEndpoint, Invocation, Iri, Kernel,
+///     ReprType, Representation, Request, Verb,
+/// };
+///
+/// let html = |body: &'static str| {
+///     FnEndpoint::new("fixed", move |_: &Invocation<'_>| {
+///         Ok(Representation::new(ReprType::new("text/html"), body.as_bytes().to_vec())
+///             .cacheable())
+///     })
+/// };
+/// let space = EndpointSpace::new()
+///     .bind(Exact::new("urn:iki:fn:compose"), ikigai_fn::compose())
+///     .bind(Exact::new("urn:example:mark"), html(r#"<i>"&'</i>$a{urn:example:secret}"#))
+///     .bind(
+///         Exact::new("urn:example:page"),
+///         html(r#"<b title="$h{urn:example:mark}">$h{urn:example:mark}</b>"#),
+///     );
+/// let kernel = Kernel::new(Arc::new(space));
+/// let request = Request::new(Verb::Source, Iri::parse("urn:iki:fn:compose").unwrap())
+///     .with_arg("src", ArgRef::Inline(b"urn:example:page".to_vec()));
+/// let page = block_on(kernel.issue(request, &Capability::root())).unwrap();
+/// // Escaped for text and for either quote, and the marker in the value is not
+/// // expanded: `urn:example:secret` is not even bound.
+/// let mark = "&lt;i&gt;&quot;&amp;&#39;&lt;/i&gt;$a{urn:example:secret}";
+/// assert_eq!(
+///     String::from_utf8(page.bytes).unwrap(),
+///     format!(r#"<b title="{mark}">{mark}</b>"#)
+/// );
+/// ```
 pub struct Compose;
 
 #[async_trait]
@@ -239,15 +319,7 @@ impl Endpoint for Compose {
             name: "src".to_string(),
             detail: format!("not an IRI: {e}"),
         })?;
-        let shape = inv.source(&iri).await?;
-        let Representation {
-            repr_type, bytes, ..
-        } = shape;
-        let text = String::from_utf8(bytes).map_err(|_| {
-            Error::Endpoint(format!("compose: `{}` is not UTF-8 text", iri.as_str()))
-        })?;
-        let expanded = expand(inv, text, 0).await?;
-        Ok(Representation::new(repr_type, expanded.into_bytes()).cacheable())
+        compose_template(inv, &iri).await
     }
 
     fn name(&self) -> &str {
@@ -258,16 +330,19 @@ impl Endpoint for Compose {
         Description::new("compose")
             .title("Compose")
             .summary(
-                "Recursively expands `$a{<iri>}` transclusion markers in the resource named by \
-                 the `src` argument, resolving each embedded resource through the kernel and \
-                 splicing it in. A literal marker is written `$$a{…}`. The output mirrors the \
-                 source's media type and stays cacheable only while every transcluded part is.",
+                "Fills the template named by the `src` argument: `$a{<iri>}` splices a \
+                 resource and expands its own markers, `$r{<iri>}` splices it as it is, \
+                 and `$h{<iri>}` splices it as HTML-escaped text. `{name}` in a marker is \
+                 a template argument — any other argument of this request — and \
+                 `$h{<iri> || <fallback>}` renders the fallback when the first fails. A \
+                 literal `$` is written `$$`. The output mirrors the source's media type \
+                 and stays cacheable only while every part it read is.",
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
             .input(
                 ArgSpec::new("src")
-                    .summary("the IRI of the shape resource to compose")
+                    .summary("the IRI of the template to fill")
                     .class(XSD_ANY_URI),
             )
         // No `.output(…)`. `invoke` returns the SHAPE's `repr_type` unchanged, so the
@@ -279,12 +354,75 @@ impl Endpoint for Compose {
         // pass-through spelling (core PENDING §20); until there is one, announcing
         // nothing is the only honest option, and `tests/conformance.rs` waives
         // `Check::Outputs` here and pins the pass-through by hand.
+        //
+        // Nor does it declare the template arguments: they are an OPEN set, whatever the
+        // template names, and `ArgSpec` has no spelling for "any other argument". So a
+        // pre-flight (`urn:kernel:validate`) reports each one as unknown, though the
+        // endpoint uses it. Reported to the hub rather than worked around.
     }
 }
 
-/// `compose`: recursive `$a{<iri>}` resource transclusion. See [`Compose`].
+/// `compose`: fill the template named by `src`. See [`Compose`].
 pub fn compose() -> Compose {
     Compose
+}
+
+/// `composeOver`: a template bound at a NAME — [`Compose`] with its `src` fixed.
+///
+/// Bind it under a URI template and the variables the name captures are the template's
+/// arguments, so a parameterized view is a resource like any other:
+/// `urn:example:view:square:{x}:{y}` over `urn:example:template:square` answers
+/// `urn:example:view:square:0:2` with the template filled for `x=0`, `y=2`. That name is
+/// what a composer that takes an IRI (`conditional`'s `then`, another template's marker)
+/// can point at, and what the cache and a golden thread key on. The template is sourced
+/// through the kernel, so editing it recomputes every view over it.
+pub struct ComposeOver {
+    src: Iri,
+}
+
+#[async_trait]
+impl Endpoint for ComposeOver {
+    async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        compose_template(inv, &self.src).await
+    }
+
+    fn name(&self) -> &str {
+        "composeOver"
+    }
+
+    fn describe(&self) -> Description {
+        Description::new("composeOver")
+            .title("Compose over a template")
+            .summary(format!(
+                "Fills the template `{}` as compose does, with the variables this name \
+                 captured (and any other arguments) as its template arguments.",
+                self.src.as_str()
+            ))
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+        // No inputs: the captured variables are the binding's, not this endpoint's, and
+        // the rest are compose's open set (see `Compose::describe`). No output, for
+        // compose's reason: the served type is the template's.
+    }
+}
+
+/// `composeOver`: the template `src`, filled — bind it at the name of a view. See
+/// [`ComposeOver`].
+pub fn compose_over(src: Iri) -> ComposeOver {
+    ComposeOver { src }
+}
+
+/// Source the template `src` and fill it: the one body of [`Compose`] and
+/// [`ComposeOver`].
+async fn compose_template(inv: &Invocation<'_>, src: &Iri) -> Result<Representation> {
+    let shape = inv.source(src).await?;
+    let Representation {
+        repr_type, bytes, ..
+    } = shape;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| Error::Endpoint(format!("compose: `{}` is not UTF-8 text", src.as_str())))?;
+    let expanded = expand(inv, text, 0).await?;
+    Ok(Representation::new(repr_type, expanded.into_bytes()).cacheable())
 }
 
 /// `conditional`: the **lazy** sibling of [`Compose`]. Sources the `if` resource,
@@ -294,6 +432,10 @@ pub fn compose() -> Compose {
 /// condition with no `else` yields an empty representation. Because each branch is
 /// taken via `inv.source`, dependencies propagate: if `if`'s value later flips (its
 /// thread is cut), the conditional recomputes and can take the other branch.
+///
+/// With `equals`, the condition is "`if`'s text, trimmed, is exactly `equals`" instead
+/// of a boolean — so a template can branch on a VALUE (`if` a cell `equals=-`, it is
+/// empty) with no predicate resource written for it.
 ///
 /// The contract is checked before the branch is chosen: `then` is required whatever
 /// `if` says, and `if`/`then`/`else` must each be an IRI whether or not they end up
@@ -316,8 +458,17 @@ impl Endpoint for Conditional {
             Err(Error::MissingArgument(_)) => None,
             Err(e) => return Err(e),
         };
+        let equals = match inv.inline_str("equals") {
+            Ok(value) => Some(value),
+            Err(Error::MissingArgument(_)) => None,
+            Err(e) => return Err(e),
+        };
         let verdict = inv.source(&cond_iri).await?;
-        if as_bool(&verdict.bytes, &cond_iri)? {
+        let taken = match equals {
+            Some(value) => as_text(&verdict.bytes, &cond_iri)?.trim() == value,
+            None => as_bool(&verdict.bytes, &cond_iri)?,
+        };
+        if taken {
             inv.source(&then_iri).await
         } else {
             match else_iri {
@@ -339,16 +490,19 @@ impl Endpoint for Conditional {
         Description::new("conditional")
             .title("Conditional")
             .summary(
-                "Sources `if` and reads it as a boolean (true/false/1/0/yes/no), then sources \
-                 and returns ONLY `then` (when true) or the optional `else` (when false) — the \
-                 untaken branch is never invoked. A false condition with no `else` returns \
-                 nothing. The lazy counterpart to compose's eager fan-out.",
+                "Sources `if` and reads it as a boolean (true/false/1/0/yes/no) — or, with \
+                 `equals`, tests whether its trimmed text is exactly that value — then \
+                 sources and returns ONLY `then` (when true) or the optional `else` (when \
+                 false); the untaken branch is never invoked. A false condition with no \
+                 `else` returns nothing. The lazy counterpart to compose's eager fan-out.",
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
             .input(
                 ArgSpec::new("if")
-                    .summary("IRI of a resource whose value is a boolean")
+                    .summary(
+                        "IRI of a resource whose value is a boolean (or is compared to `equals`)",
+                    )
                     .class(XSD_ANY_URI),
             )
             .input(
@@ -360,6 +514,15 @@ impl Endpoint for Conditional {
                 ArgSpec::new("else")
                     .summary("IRI to source and return when `if` is false (optional)")
                     .class(XSD_ANY_URI)
+                    .optional(),
+            )
+            .input(
+                ArgSpec::new("equals")
+                    .summary(
+                        "compare `if`'s trimmed text to this value instead of reading it as \
+                         a boolean (optional)",
+                    )
+                    .class(XSD_STRING)
                     .optional(),
             )
         // No `.output(…)`, for compose's reason: a taken branch is returned from
@@ -387,13 +550,16 @@ fn parse_iri(s: &str, arg: &str) -> Result<Iri> {
     })
 }
 
+/// A condition's bytes as UTF-8 text.
+fn as_text<'b>(bytes: &'b [u8], iri: &Iri) -> Result<&'b str> {
+    std::str::from_utf8(bytes)
+        .map_err(|_| Error::Endpoint(format!("conditional: `{}` is not UTF-8 text", iri.as_str())))
+}
+
 /// Interpret a resource's bytes as a boolean — lenient on common spellings, strict
 /// on anything else so a malformed condition can't silently mis-branch.
 fn as_bool(bytes: &[u8], iri: &Iri) -> Result<bool> {
-    let s = std::str::from_utf8(bytes)
-        .map_err(|_| Error::Endpoint(format!("conditional: `{}` is not UTF-8 text", iri.as_str())))?
-        .trim()
-        .to_ascii_lowercase();
+    let s = as_text(bytes, iri)?.trim().to_ascii_lowercase();
     match s.as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" | "" => Ok(false),
@@ -404,15 +570,64 @@ fn as_bool(bytes: &[u8], iri: &Iri) -> Result<bool> {
     }
 }
 
-/// One piece of a scanned shape: literal text, or a marker body to resolve.
+/// How a marker splices what it resolves.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    /// `$a{…}`: as it is, and then its own markers expanded.
+    Transclude,
+    /// `$r{…}`: as it is, terminated.
+    Raw,
+    /// `$h{…}`: as text, HTML-escaped, terminated.
+    Html,
+}
+
+impl Mode {
+    /// The mode a marker letter spells, if it spells one.
+    fn from_letter(letter: u8) -> Option<Mode> {
+        match letter {
+            b'a' => Some(Mode::Transclude),
+            b'r' => Some(Mode::Raw),
+            b'h' => Some(Mode::Html),
+            _ => None,
+        }
+    }
+}
+
+/// One piece of a scanned template: literal text, or a marker to resolve.
 enum Segment {
     Lit(String),
-    Marker(String),
+    Marker(Mode, String),
+}
+
+/// One alternative of a marker body.
+enum Alt {
+    /// `{name}`: a template argument's value; resolves nothing.
+    Arg(String),
+    /// `<iri>[?k=v&…]`: a SOURCE request. The IRI and the unquoted values may name
+    /// template arguments.
+    Request {
+        iri: String,
+        args: Vec<(String, Value)>,
+    },
+}
+
+/// A marker argument's value: quoted (`"…"`, literal) or not (may name arguments).
+struct Value {
+    text: String,
+    literal: bool,
+}
+
+/// A parsed marker: how it splices, its body as written, and its alternatives in order.
+struct Marker {
+    mode: Mode,
+    body: String,
+    alts: Vec<Alt>,
 }
 
 /// Split `text` into ordered literal/marker segments. `$$` collapses to a literal
-/// `$` (so `$$a{…}` becomes the literal text `$a{…}`); `$a{ … }` becomes a marker
-/// holding its inner `<iri>[?args]`; an unterminated `$a{` stays literal.
+/// `$` (so `$$a{…}` becomes the literal text `$a{…}`); `$a{ … }`, `$r{ … }` and
+/// `$h{ … }` become markers holding their trimmed body; an unterminated marker stays
+/// literal.
 fn scan(text: &str) -> Vec<Segment> {
     let b = text.as_bytes();
     let mut segments = Vec::new();
@@ -420,20 +635,21 @@ fn scan(text: &str) -> Vec<Segment> {
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'$' {
-            // `$$` is a literal `$` — collapses the escape for `$a{`.
+            // `$$` is a literal `$` — the escape for every marker.
             if b.get(i + 1) == Some(&b'$') {
                 lit.push('$');
                 i += 2;
                 continue;
             }
-            // `$a{ … }` — a transclusion marker.
-            if text[i..].starts_with("$a{") {
-                let brace = i + 2; // the `{`
+            let mode = b.get(i + 1).and_then(|letter| Mode::from_letter(*letter));
+            if let (Some(mode), Some(b'{')) = (mode, b.get(i + 2)) {
+                let brace = i + 2;
                 if let Some(close) = find_marker_end(text, brace) {
                     if !lit.is_empty() {
                         segments.push(Segment::Lit(std::mem::take(&mut lit)));
                     }
-                    segments.push(Segment::Marker(text[brace + 1..close].trim().to_string()));
+                    let body = text[brace + 1..close].trim().to_string();
+                    segments.push(Segment::Marker(mode, body));
                     i = close + 1;
                     continue;
                 }
@@ -450,12 +666,13 @@ fn scan(text: &str) -> Vec<Segment> {
     segments
 }
 
-/// Expand every `$a{<iri>}` marker in `text`. The `a` is for *asynchronous*: a
-/// level's markers are forked via [`Invocation::fan_out`] and joined, so a
+/// Expand every marker in `text`. The `a` is for *asynchronous*: the first alternative
+/// of each of a level's markers is forked via [`Invocation::fan_out`] and joined, so a
 /// scheduled kernel resolves them **concurrently** (each spawned onto the pool,
-/// parking on the join) while a single-threaded kernel resolves them in turn. Each
-/// result is itself expanded — a transcluded shape's own markers recurse, and the
-/// sub-expansions run concurrently too. Boxed for the async recursion.
+/// parking on the join) while a single-threaded kernel resolves them in turn. A `$a`
+/// result is itself expanded — a transcluded template's own markers recurse, and the
+/// sub-expansions run concurrently too. A fallback is tried only after its marker's
+/// first alternative failed, in turn. Boxed for the async recursion.
 fn expand<'a>(
     inv: &'a Invocation<'_>,
     text: String,
@@ -468,36 +685,58 @@ fn expand<'a>(
             )));
         }
         let segments = scan(&text);
-        // This level's marker bodies, in document order.
-        let markers: Vec<String> = segments
+        // This level's markers, in document order. One that cannot be parsed is the
+        // template's fault, and fails the whole compose whatever fallbacks it names.
+        let markers = segments
             .iter()
             .filter_map(|segment| match segment {
-                Segment::Marker(inner) => Some(inner.clone()),
+                Segment::Marker(mode, body) => Some(parse_marker(*mode, body)),
                 Segment::Lit(_) => None,
             })
-            .collect();
-        // Fork: resolve the level's markers concurrently. `fan_out` spawns each onto
-        // the scheduler when the kernel is scheduled, and resolves them in turn
-        // otherwise — so the single-threaded path is unchanged.
-        let requests = markers
+            .collect::<Result<Vec<Marker>>>()?;
+        // Fork: every first alternative that is a request resolves concurrently. An
+        // argument is answered here, and a request that cannot be built (a missing
+        // argument, a bad IRI) is that marker's failure — its fallback's to cover.
+        let mut requests = Vec::new();
+        let firsts: Vec<Option<Result<String>>> = markers
             .iter()
-            .map(|inner| parse_marker(inner))
-            .collect::<Result<Vec<_>>>()?;
-        let resolved = inv.fan_out(requests).await;
-        // Each resolved marker is itself expanded; a non-text result isn't inlined.
-        // These sub-expansions run concurrently (and their own markers fan out again).
-        let expansions = resolved
+            .map(|marker| match &marker.alts[0] {
+                Alt::Arg(name) => Some(template_arg(inv, name)),
+                Alt::Request { iri, args } => match build_request(inv, &marker.body, iri, args) {
+                    Ok(request) => {
+                        requests.push(request);
+                        None
+                    }
+                    Err(e) => Some(Err(e)),
+                },
+            })
+            .collect();
+        let mut resolved = inv.fan_out(requests).await.into_iter();
+        let outcomes: Vec<First> = firsts
             .into_iter()
-            .zip(markers)
-            .map(|(result, inner)| async move {
-                let repr = result?;
-                match String::from_utf8(repr.bytes) {
-                    Ok(s) => expand(inv, s, depth + 1).await,
-                    Err(e) => Ok(format!(
-                        "<!-- compose: `{inner}` is non-text ({} bytes), not inlined -->",
-                        e.into_bytes().len()
-                    )),
+            .map(|first| match first {
+                Some(local) => First::Local(local),
+                None => First::Resolved(resolved.next().expect("one result per request")),
+            })
+            .collect();
+        let expansions = markers
+            .iter()
+            .zip(outcomes)
+            .map(|(marker, first)| async move {
+                let mut result = match first {
+                    First::Local(value) => value.map(|value| splice_value(marker.mode, value)),
+                    First::Resolved(Ok(repr)) => {
+                        splice(inv, marker.mode, &marker.body, repr, depth).await
+                    }
+                    First::Resolved(Err(e)) => Err(e),
+                };
+                for alt in &marker.alts[1..] {
+                    if result.is_ok() {
+                        break;
+                    }
+                    result = evaluate(inv, marker, alt, depth).await;
                 }
+                result
             });
         let mut expanded = try_join_all(expansions).await?.into_iter();
         // Reassemble in document order.
@@ -505,7 +744,7 @@ fn expand<'a>(
         for segment in &segments {
             match segment {
                 Segment::Lit(t) => out.push_str(t),
-                Segment::Marker(_) => {
+                Segment::Marker(..) => {
                     out.push_str(&expanded.next().expect("one expansion per marker"))
                 }
             }
@@ -514,11 +753,130 @@ fn expand<'a>(
     })
 }
 
+/// A marker's first alternative, once the level's fork has joined.
+enum First {
+    /// Answered without the kernel: an argument's value, or the failure to build the
+    /// request.
+    Local(Result<String>),
+    /// What the kernel resolved the request to.
+    Resolved(Result<Representation>),
+}
+
+/// Resolve and splice one (fallback) alternative of `marker`.
+async fn evaluate(
+    inv: &Invocation<'_>,
+    marker: &Marker,
+    alt: &Alt,
+    depth: usize,
+) -> Result<String> {
+    match alt {
+        Alt::Arg(name) => Ok(splice_value(marker.mode, template_arg(inv, name)?)),
+        Alt::Request { iri, args } => {
+            let request = build_request(inv, &marker.body, iri, args)?;
+            let repr = inv.issue(request).await?;
+            splice(inv, marker.mode, &marker.body, repr, depth).await
+        }
+    }
+}
+
+/// What a marker splices for the resource it resolved.
+async fn splice(
+    inv: &Invocation<'_>,
+    mode: Mode,
+    body: &str,
+    repr: Representation,
+    depth: usize,
+) -> Result<String> {
+    match (mode, String::from_utf8(repr.bytes)) {
+        (Mode::Transclude, Ok(text)) => expand(inv, text, depth + 1).await,
+        (Mode::Raw, Ok(text)) => Ok(text),
+        (Mode::Html, Ok(text)) => Ok(escape_html(&text)),
+        // A value spliced into HTML must be text: a placeholder here would be escaped
+        // into visible garbage, or land inside an attribute.
+        (Mode::Html, Err(e)) => Err(Error::Endpoint(format!(
+            "compose: `{body}` is non-text ({} bytes), and `$h` splices text",
+            e.into_bytes().len()
+        ))),
+        (_, Err(e)) => Ok(format!(
+            "<!-- compose: `{body}` is non-text ({} bytes), not inlined -->",
+            e.into_bytes().len()
+        )),
+    }
+}
+
+/// What a marker splices for an argument's value. (`$a` over an argument is refused
+/// when the marker is parsed, so a value is never expanded.)
+fn splice_value(mode: Mode, value: String) -> String {
+    match mode {
+        Mode::Html => escape_html(&value),
+        Mode::Raw | Mode::Transclude => value,
+    }
+}
+
+/// `text`, safe in HTML element text and in an attribute value quoted with either
+/// quote: `&`, `<`, `>`, `"` and `'` become `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`.
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The value of the template argument `name`: the variable the name captured, else the
+/// request's inline argument; [`Error::MissingArgument`] if neither is there.
+fn template_arg(inv: &Invocation<'_>, name: &str) -> Result<String> {
+    if let Some(value) = inv.bindings.get(name) {
+        return Ok(value.to_string());
+    }
+    inv.inline_str(name).map(str::to_string)
+}
+
 /// The index of the `}` closing the marker whose `{` is at `brace`, skipping any
-/// `}` inside a `"…"` span (where `\"` and `\\` are escapes). `None` if unterminated.
+/// `}` inside a `"…"` span (where `\"` and `\\` are escapes) and any that closes a
+/// `{name}` argument inside the body. `None` if unterminated.
 fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
     let b = text.as_bytes();
     let mut i = brace + 1;
+    let mut in_quote = false;
+    let mut depth = 0usize;
+    while i < b.len() {
+        match b[i] {
+            b'\\' if in_quote => i += 2,
+            b'"' => {
+                in_quote = !in_quote;
+                i += 1;
+            }
+            b'{' if !in_quote => {
+                depth += 1;
+                i += 1;
+            }
+            b'}' if !in_quote => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+                i += 1;
+            }
+            c => i += utf8_len(c),
+        }
+    }
+    None
+}
+
+/// Split `s` on every `sep` outside a `"…"` span (where `\"` and `\\` are escapes).
+fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Vec<&'s str> {
+    let b = s.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
     let mut in_quote = false;
     while i < b.len() {
         match b[i] {
@@ -527,52 +885,178 @@ fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
                 in_quote = !in_quote;
                 i += 1;
             }
-            b'}' if !in_quote => return Some(i),
-            c => i += utf8_len(c),
+            // `sep` is ASCII, so a match starts on a character boundary.
+            _ if !in_quote && b[i..].starts_with(sep.as_bytes()) => {
+                parts.push(&s[start..i]);
+                i += sep.len();
+                start = i;
+            }
+            _ => i += 1,
         }
     }
-    None
+    parts.push(&s[start.min(s.len())..]);
+    parts
 }
 
-/// Parse a marker body `<iri>[?k=v&…]` into a SOURCE request.
-fn parse_marker(inner: &str) -> Result<Request> {
-    let (iri_str, query) = match inner.split_once('?') {
-        Some((iri, q)) => (iri.trim(), Some(q)),
-        None => (inner, None),
-    };
-    let iri = Iri::parse(iri_str)
-        .map_err(|e| Error::Endpoint(format!("compose: bad IRI in marker `{inner}`: {e}")))?;
-    let mut request = Request::new(Verb::Source, iri);
-    if let Some(q) = query {
-        for (key, value) in parse_query(q)? {
-            request = request.with_arg(key, ArgRef::Inline(value.into_bytes()));
+/// Parse a marker body: `alternative [|| alternative]…`, each an argument `{name}` or a
+/// request `<iri>[?k=v&…]`. Every `{…}` must name an argument; `$a` over an argument is
+/// refused.
+fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
+    let refuse = |detail: String| Error::Endpoint(format!("compose: marker `{body}`: {detail}"));
+    let mut alts = Vec::new();
+    for alt in split_outside_quotes(body, "||") {
+        let alt = alt.trim();
+        if alt.is_empty() {
+            return Err(refuse("an empty alternative".to_string()));
         }
+        if let Some(name) = alt
+            .strip_prefix('{')
+            .and_then(|rest| rest.strip_suffix('}'))
+        {
+            if is_arg_name(name) {
+                if mode == Mode::Transclude {
+                    return Err(refuse(format!(
+                        "`{{{name}}}` is an argument, a value and never a template — \
+                         splice it with `$h` or `$r`, not `$a`"
+                    )));
+                }
+                alts.push(Alt::Arg(name.to_string()));
+                continue;
+            }
+        }
+        let (iri, query) = match alt.split_once('?') {
+            Some((iri, query)) => (iri.trim(), Some(query)),
+            None => (alt, None),
+        };
+        check_placeholders(iri).map_err(refuse)?;
+        let mut args = Vec::new();
+        if let Some(query) = query {
+            for pair in split_outside_quotes(query, "&") {
+                let pair = pair.trim();
+                if pair.is_empty() {
+                    continue;
+                }
+                let (key, value) = pair.split_once('=').ok_or_else(|| {
+                    Error::Endpoint(format!(
+                        "compose: marker argument `{pair}` is not key=value"
+                    ))
+                })?;
+                let value = value.trim();
+                let value = match unquote(value) {
+                    Some(text) => Value {
+                        text,
+                        literal: true,
+                    },
+                    None => {
+                        check_placeholders(value).map_err(refuse)?;
+                        Value {
+                            text: value.to_string(),
+                            literal: false,
+                        }
+                    }
+                };
+                args.push((key.trim().to_string(), value));
+            }
+        }
+        alts.push(Alt::Request {
+            iri: iri.to_string(),
+            args,
+        });
+    }
+    Ok(Marker {
+        mode,
+        body: body.to_string(),
+        alts,
+    })
+}
+
+/// Build the SOURCE request an alternative names, its arguments filled in.
+fn build_request(
+    inv: &Invocation<'_>,
+    body: &str,
+    iri: &str,
+    args: &[(String, Value)],
+) -> Result<Request> {
+    let filled = fill_arguments(inv, iri, true)?;
+    let iri = Iri::parse(&filled)
+        .map_err(|e| Error::Endpoint(format!("compose: bad IRI in marker `{body}`: {e}")))?;
+    let mut request = Request::new(Verb::Source, iri);
+    for (key, value) in args {
+        let text = if value.literal {
+            value.text.clone()
+        } else {
+            fill_arguments(inv, &value.text, false)?
+        };
+        request = request.with_arg(key.clone(), ArgRef::Inline(text.into_bytes()));
     }
     Ok(request)
 }
 
-/// Parse `k=v&k2="v with spaces"` marker arguments. A value may be double-quoted
-/// (the quotes are stripped and `\"` / `\\` unescaped inside).
-fn parse_query(query: &str) -> Result<Vec<(String, String)>> {
-    let mut args = Vec::new();
-    for pair in query.split('&') {
-        let pair = pair.trim();
-        if pair.is_empty() {
-            continue;
+/// Every `{name}` in `template` replaced by that argument's value — percent-encoded
+/// when `encode` (in an IRI), verbatim otherwise (as one argument value). The
+/// placeholders were checked when the marker was parsed.
+fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<String> {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let close = after
+            .find('}')
+            .expect("placeholders are checked when parsed");
+        let value = template_arg(inv, &after[..close])?;
+        if encode {
+            percent_encode(&value, &mut out);
+        } else {
+            out.push_str(&value);
         }
-        let (key, value) = pair.split_once('=').ok_or_else(|| {
-            Error::Endpoint(format!(
-                "compose: marker argument `{pair}` is not key=value"
-            ))
-        })?;
-        args.push((key.trim().to_string(), unquote(value.trim())));
+        rest = &after[close + 1..];
     }
-    Ok(args)
+    out.push_str(rest);
+    Ok(out)
 }
 
-/// Strip surrounding double quotes from a marker argument value, unescaping
-/// `\"` and `\\`. An unquoted value is returned unchanged.
-fn unquote(value: &str) -> String {
+/// Refuse a `{` that does not open a `{name}` argument.
+fn check_placeholders(template: &str) -> std::result::Result<(), String> {
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open + 1..];
+        let close = after
+            .find('}')
+            .ok_or_else(|| "a `{` is never closed".to_string())?;
+        let name = &after[..close];
+        if !is_arg_name(name) {
+            return Err(format!("`{{{name}}}` is not an argument name"));
+        }
+        rest = &after[close + 1..];
+    }
+    Ok(())
+}
+
+/// An argument name: a letter or `_`, then letters, digits, `_` and `-`.
+fn is_arg_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Append `value` percent-encoded as RFC 6570 expands a simple variable: every byte
+/// outside the unreserved set (`A-Z a-z 0-9 - . _ ~`) as `%XX`.
+fn percent_encode(value: &str, out: &mut String) {
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+}
+
+/// The text of a double-quoted marker argument value, `\"` and `\\` unescaped, or
+/// `None` if the value is not quoted.
+fn unquote(value: &str) -> Option<String> {
     let b = value.as_bytes();
     if b.len() >= 2 && b[0] == b'"' && b[b.len() - 1] == b'"' {
         let mut out = String::with_capacity(value.len() - 2);
@@ -583,9 +1067,9 @@ fn unquote(value: &str) -> String {
                 _ => out.push(c),
             }
         }
-        out
+        Some(out)
     } else {
-        value.to_string()
+        None
     }
 }
 
