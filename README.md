@@ -15,8 +15,9 @@ an in-browser WebAssembly host alike (no WASI required).
 |-------------|------------------|--------------|
 | `to_upper()` | `urn:iki:fn:toUpper` | upper-cases the `in` argument |
 | `reverse_list()` | `urn:iki:fn:reverseList` | reverses newline-separated items in `in` |
-| `compose()` | `urn:iki:fn:compose` | recursive `$a{<iri>}` resource transclusion |
-| `conditional()` | `urn:iki:fn:conditional` | lazy `if`/`then`/`else`; only the taken branch runs |
+| `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}` and `$h{…}` markers, see below |
+| `compose_over(src)` | none — bind it at a view's name | `compose` with the template fixed; the name's captured variables are its arguments |
+| `conditional()` | `urn:iki:fn:conditional` | lazy `if`/`then`/`else`; only the taken branch runs; `equals=` branches on a value |
 | `split()` | `urn:demo:split` | splits `in` on commas into a newline list |
 | `wrap()` | `urn:demo:wrap` | surrounds the `text` argument with `[ ]` |
 | `greet()` | `urn:demo:greet` | combines `greeting` and `name` |
@@ -29,6 +30,45 @@ Every input declares its datatype (`xsd:string` for text, `xsd:anyURI` for the
 IRI-valued `src`/`if`/`then`/`else`), so type-driven selection — `select_action`,
 `urn:kernel:actions types=` — offers these endpoints for the values you hold. A
 test pins that no input in `space()` is left unclassed.
+
+## Templates: views as pure composition
+
+`compose` is a request-template language (NetKernel's TRL, resolved through the
+kernel). A template is any text resource; a marker in it names a resource, and
+`compose` resolves it, splices it in, and hangs the result from every golden
+thread it read — so the filled view is cached and a write to anything it read
+recomputes it.
+
+| marker | splices | the spliced text's own markers |
+|---|---|---|
+| `$a{<iri>}` | as it is — trusted markup | **expanded**: a template including a template |
+| `$r{<iri>}` | as it is — trusted markup | left alone (terminated) |
+| `$h{<iri>}` | as text, HTML-escaped (`'` → `&#39;`) | left alone (terminated) |
+
+- **Terminate.** Only `$a` expands what it splices, so content from an atom —
+  user data, a peer, a file — goes in through `$h` (or `$r`) and a marker in it
+  is text. `$a` re-expands everything it splices, including a nested compose's
+  output: splice a composed view with `$r`.
+- **Escaping.** `$h` output is safe in element text and in an attribute quoted
+  with either quote. Quote every attribute.
+- **Template arguments.** Every argument of the request but `src` is a template
+  argument, and a marker names one as `{name}`: percent-encoded in an IRI
+  (`$h{urn:example:cell:{x}:{y}}`), verbatim as an unquoted value, literal
+  inside a quoted one. `$h{{x}}` splices the value itself.
+- **Per-marker errors.** A failed marker fails the whole compose with its own
+  typed error, unless it names fallbacks: `$h{urn:example:title ||
+  urn:example:untitled}`. A fallback for an absent resource is cached and cut
+  when the resource appears; one for a denial makes the view uncacheable.
+- **Views at names.** `compose_over(src)` bound under a URI template makes a
+  parameterized view a resource: `urn:example:view:square:{x}:{y}`. That is what
+  `conditional` can branch to, and what the cache keys on.
+
+`tests/tic_tac_toe_board.rs` is the proof: the tutorial's tic-tac-toe board,
+which Rust code fills from the cells and the winner, as six templates and names
+over the same cell space — byte for byte the Rust version's output in every
+state, recomputed by a write to one cell.
+
+`$a{…}` behaves exactly as it did in 0.2.x, and its tests are unchanged.
 
 ## Conformance
 
