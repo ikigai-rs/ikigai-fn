@@ -16,7 +16,7 @@ an in-browser WebAssembly host alike (no WASI required).
 | `to_upper()` | `urn:iki:fn:toUpper` | upper-cases the `in` argument |
 | `reverse_list()` | `urn:iki:fn:reverseList` | reverses newline-separated items in `in` |
 | `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}` and `$h{…}` markers, see below |
-| `compose_over(src)` | none — bind it at a view's name | `compose` with the template fixed; the name's captured variables are its arguments |
+| `compose_over(src)` | none — bind it at a view's name | `compose` with the template fixed; the name's captured variables are its arguments; `.named(…)` gives each view its own endpoint name |
 | `conditional()` | `urn:iki:fn:conditional` | lazy `if`/`then`/`else`; only the taken branch runs; `equals=` branches on a value |
 | `split()` | `urn:demo:split` | splits `in` on commas into a newline list |
 | `wrap()` | `urn:demo:wrap` | surrounds the `text` argument with `[ ]` |
@@ -62,6 +62,23 @@ recomputes it.
 - **Views at names.** `compose_over(src)` bound under a URI template makes a
   parameterized view a resource: `urn:example:view:square:{x}:{y}`. That is what
   `conditional` can branch to, and what the cache keys on.
+- **One name per view.** Every `compose_over` instance is called `composeOver`
+  until it is named, and a name is how the rest of the ecosystem tells endpoints
+  apart: a declared space (core 0.1.83, `ikigai_core::build`) binds each door to
+  a registered endpoint BY NAME, and the `Registry` refuses two different
+  endpoints under one name. So an application with several views names each one:
+
+  ```rust,ignore
+  let board = ikigai_fn::compose_over(template_iri).named("ttt-view-board");
+  ```
+
+  The name is also the view's description id, so the catalog
+  (`urn:ikigai:endpoint:ttt-view-board`), `urn:kernel:validate` and the MCP
+  projection each see one entry per view rather than one `composeOver` fronting
+  them all; the title, "Compose over a template", still says what kind of
+  endpoint it is. Unnamed, a view describes itself exactly as it did in 0.3.0.
+  `tests/declared_views.rs` registers five named views, declares the space they
+  are bound in, builds it with core's builder, and reads each door back.
 
 `tests/tic_tac_toe_board.rs` is the proof: the tutorial's tic-tac-toe board,
 which Rust code fills from the cells and the winner, as six templates and names
