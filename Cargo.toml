@@ -25,3 +25,8 @@ futures = "0.3"
 # the per-CHECK waiver the two pass-through resolvers need (a whole-endpoint
 # `opt_out` would drop ENFORCED and CACHEABLE with it).
 ikigai-conformance = "0.2.0"
+# Only the tests: `tests/declared_views.rs` proves named views against core's builder
+# (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.
+# The library itself needs nothing past 0.1.73 — a name is plain `Endpoint::name` — so
+# the floor above stays where it is and no host is pulled forward by this crate.
+ikigai-core = { version = "0.1.83", features = ["declare"] }

@@ -367,6 +367,10 @@ pub fn compose() -> Compose {
     Compose
 }
 
+/// The name every [`ComposeOver`] answers until it is [`named`](ComposeOver::named): the
+/// KIND of endpoint it is.
+pub const COMPOSE_OVER: &str = "composeOver";
+
 /// `composeOver`: a template bound at a NAME — [`Compose`] with its `src` fixed.
 ///
 /// Bind it under a URI template and the variables the name captures are the template's
@@ -376,8 +380,31 @@ pub fn compose() -> Compose {
 /// what a composer that takes an IRI (`conditional`'s `then`, another template's marker)
 /// can point at, and what the cache and a golden thread key on. The template is sourced
 /// through the kernel, so editing it recomputes every view over it.
+///
+/// **One endpoint per template, so one name per template.** Every instance answers
+/// [`name`](Endpoint::name) with `composeOver` unless it is [`named`](Self::named), and a
+/// name is how the ecosystem tells endpoints apart: a declared space binds a door to an
+/// endpoint BY NAME (`ik:endpointName`), and core's `Registry` refuses a second, different
+/// endpoint under a name already taken. So an application with several views names each
+/// one, and the name is also its [`describe`](Endpoint::describe) id — see there.
 pub struct ComposeOver {
     src: Iri,
+    name: String,
+}
+
+impl ComposeOver {
+    /// Give this instance its own name (builder) — what [`name`](Endpoint::name) answers,
+    /// what a declared door binds it by, and its description id. Without it the name is
+    /// [`COMPOSE_OVER`].
+    ///
+    /// The name is published: it becomes the catalog node `urn:ikigai:endpoint:{name}`
+    /// and an MCP tool name, so give it the shape of an endpoint id — short, IRI-safe,
+    /// `kebab-case` by convention (`ttt-view-board`). It is not checked here; core's
+    /// `Description::validate` reports an id that is not IRI-safe.
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
+    }
 }
 
 #[async_trait]
@@ -387,11 +414,24 @@ impl Endpoint for ComposeOver {
     }
 
     fn name(&self) -> &str {
-        "composeOver"
+        &self.name
     }
 
+    /// The description's id is the instance's NAME, and its title is the KIND.
+    ///
+    /// The id is what the ecosystem keys an endpoint on: the catalog subject
+    /// `urn:ikigai:endpoint:{id}`, the action IRI `urn:kernel:validate` looks an endpoint
+    /// up by, the MCP tool name, and the identity guard type-driven selection checks a
+    /// template door against. Five views all describing themselves as `composeOver` would
+    /// be ONE catalog node carrying five summaries, one validate target (whichever was
+    /// found first), and one MCP tool fronting five different templates behind a
+    /// synthesized selector argument, summarized as whichever template came first. So a
+    /// named instance is described under its name, and each view is its own entry
+    /// everywhere. The kind is not lost: the title stays "Compose over a template" for
+    /// every instance, and the summary names the template. An unnamed instance describes
+    /// itself exactly as it did before `named` existed.
     fn describe(&self) -> Description {
-        Description::new("composeOver")
+        Description::new(self.name.as_str())
             .title("Compose over a template")
             .summary(format!(
                 "Fills the template `{}` as compose does, with the variables this name \
@@ -408,8 +448,48 @@ impl Endpoint for ComposeOver {
 
 /// `composeOver`: the template `src`, filled — bind it at the name of a view. See
 /// [`ComposeOver`].
+///
+/// An application with more than one view names each one with
+/// [`named`](ComposeOver::named), because a name is how a declared space finds its
+/// endpoint. The name answers [`name`](Endpoint::name) and is the description's id:
+///
+/// ```
+/// use std::sync::Arc;
+/// use futures::executor::block_on;
+/// use ikigai_core::{
+///     Capability, Endpoint, EndpointSpace, Exact, FnEndpoint, Iri, Kernel, ReprType,
+///     Representation, Request, Verb,
+/// };
+///
+/// let board = ikigai_fn::compose_over(Iri::parse("urn:example:template:board").unwrap())
+///     .named("board-view");
+/// assert_eq!(board.name(), "board-view");
+/// assert_eq!(board.describe().id, "board-view");
+/// assert_eq!(board.describe().title, "Compose over a template");
+///
+/// // Unnamed, it is the kind — the name every instance shares.
+/// let plain = ikigai_fn::compose_over(Iri::parse("urn:example:template:board").unwrap());
+/// assert_eq!(plain.name(), ikigai_fn::COMPOSE_OVER);
+/// assert_eq!(plain.describe().id, "composeOver");
+///
+/// // A name changes what the endpoint is called, never what it answers.
+/// let template = FnEndpoint::new("board", |_| {
+///     Ok(Representation::new(ReprType::new("text/html"), b"<p>$h{{who}}</p>".to_vec()))
+/// });
+/// let space = EndpointSpace::new()
+///     .bind(Exact::new("urn:example:template:board"), template)
+///     .bind(Exact::new("urn:example:view:board"), board);
+/// let kernel = Kernel::new(Arc::new(space));
+/// let request = Request::new(Verb::Source, Iri::parse("urn:example:view:board").unwrap())
+///     .with_arg("who", ikigai_core::ArgRef::Inline(b"<X>".to_vec()));
+/// let view = block_on(kernel.issue(request, &Capability::root())).unwrap();
+/// assert_eq!(view.bytes, b"<p>&lt;X&gt;</p>");
+/// ```
 pub fn compose_over(src: Iri) -> ComposeOver {
-    ComposeOver { src }
+    ComposeOver {
+        src,
+        name: COMPOSE_OVER.to_string(),
+    }
 }
 
 /// Source the template `src` and fill it: the one body of [`Compose`] and
