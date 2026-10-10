@@ -228,6 +228,7 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 ///
 /// A marker may carry inline arguments (`$a{urn:iki:fn:toUpper?in="resource oriented
 /// computing"}`); a literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
+/// [`escape_markers`] writes any text that way, and [`MARKER_LETTERS`] lists the letters.
 ///
 /// **Escaping.** `$h` replaces `&`, `<`, `>`, `"` and `'` with `&amp;`, `&lt;`, `&gt;`,
 /// `&quot;` and `&#39;`, so its output is safe in element text and inside an attribute
@@ -662,15 +663,101 @@ enum Mode {
 }
 
 impl Mode {
-    /// The mode a marker letter spells, if it spells one.
-    fn from_letter(letter: u8) -> Option<Mode> {
-        match letter {
-            b'a' => Some(Mode::Transclude),
-            b'r' => Some(Mode::Raw),
-            b'h' => Some(Mode::Html),
-            _ => None,
+    /// Every mode, in the order compose learned its letter. The ONE list: the scanner
+    /// reads letters through it and [`MARKER_LETTERS`] is built from it, so a mode left
+    /// out is a marker nothing recognizes (and its own tests fail), never a marker the
+    /// parser reads and the escape misses.
+    const ALL: [Mode; 3] = [Mode::Transclude, Mode::Raw, Mode::Html];
+
+    /// The letter that spells this mode after `$`.
+    const fn letter(self) -> u8 {
+        match self {
+            Mode::Transclude => b'a',
+            Mode::Raw => b'r',
+            Mode::Html => b'h',
         }
     }
+
+    /// The mode a marker letter spells, if it spells one.
+    fn from_letter(letter: u8) -> Option<Mode> {
+        Mode::ALL.into_iter().find(|mode| mode.letter() == letter)
+    }
+}
+
+/// The letters [`Mode::ALL`] spells, as `char`s for [`MARKER_LETTERS`].
+const LETTERS: [char; Mode::ALL.len()] = {
+    let mut letters = ['\0'; Mode::ALL.len()];
+    let mut i = 0;
+    while i < letters.len() {
+        letters[i] = Mode::ALL[i].letter() as char;
+        i += 1;
+    }
+    letters
+};
+
+/// The letters that open a [`compose`] marker — `$a{…}`, `$r{…}`, `$h{…}` — in the order
+/// compose learned them (`a` in 0.2, `r` and `h` in 0.3).
+///
+/// Built from the list compose's own scanner reads, so it cannot drift from it. A host
+/// that escapes text for a template should call [`escape_markers`] rather than keep a copy
+/// of this list: a copy escapes only the letters it knew when it was made, and the next
+/// letter compose learns passes through it live (ledger #646). It is a slice so a new
+/// letter is not a change to its type.
+///
+/// ```
+/// assert_eq!(ikigai_fn::MARKER_LETTERS, &['a', 'r', 'h']);
+/// ```
+pub const MARKER_LETTERS: &[char] = &LETTERS;
+
+/// The marker `$` at byte `i` of `b` opens, if it opens one: a marker letter, then `{`.
+/// Whether it is ever CLOSED is the scanner's business; [`escape_markers`] escapes an
+/// unclosed one too, which costs nothing and stays literal.
+fn opens_marker(b: &[u8], i: usize) -> Option<Mode> {
+    let mode = b.get(i + 1).and_then(|letter| Mode::from_letter(*letter))?;
+    (b.get(i + 2) == Some(&b'{')).then_some(mode)
+}
+
+/// `text` written so that [`compose`] renders it exactly as it is: no marker in it
+/// resolves, and every `$` survives.
+///
+/// The one thing compose reads outside a marker is `$`: `$$` is a literal `$`, and `$`
+/// before a marker letter and `{` opens a marker. So a run of `$` is doubled whenever
+/// compose would otherwise read it differently — a run of two or more, or a single `$`
+/// that opens a marker — and a lone `$` before anything else is left as it is, which keeps
+/// ordinary text (`costs $5`) readable. Compose of the result is `text`, byte for byte.
+///
+/// This is an escape, not a normalization: it is not idempotent, and must not be, because
+/// `$$h{…}` in the input is text that says `$$h{…}` (say, documentation of the escape
+/// itself), and escaping it again must keep both `$`. Escape a value once, where it enters
+/// a template.
+///
+/// ```
+/// use ikigai_fn::escape_markers;
+///
+/// assert_eq!(escape_markers("costs $5"), "costs $5");
+/// assert_eq!(
+///     escape_markers("write $h{<iri>} for text and $$ for a dollar"),
+///     "write $$h{<iri>} for text and $$$$ for a dollar"
+/// );
+/// // Already-escaped text is text too: both of its `$` survive a compose.
+/// assert_eq!(escape_markers("$$a{<iri>}"), "$$$$a{<iri>}");
+/// ```
+pub fn escape_markers(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(offset) = text[i..].find('$') {
+        let start = i + offset;
+        let end = start + b[start..].iter().take_while(|c| **c == b'$').count();
+        // `$` is ASCII, so every index here is a char boundary.
+        out.push_str(&text[i..end]);
+        if end - start > 1 || opens_marker(b, start).is_some() {
+            out.push_str(&text[start..end]);
+        }
+        i = end;
+    }
+    out.push_str(&text[i..]);
+    out
 }
 
 /// One piece of a scanned template: literal text, or a marker to resolve.
@@ -721,8 +808,7 @@ fn scan(text: &str) -> Vec<Segment> {
                 i += 2;
                 continue;
             }
-            let mode = b.get(i + 1).and_then(|letter| Mode::from_letter(*letter));
-            if let (Some(mode), Some(b'{')) = (mode, b.get(i + 2)) {
+            if let Some(mode) = opens_marker(b, i) {
                 let brace = i + 2;
                 if let Some(close) = find_marker_end(text, brace) {
                     if !lit.is_empty() {
