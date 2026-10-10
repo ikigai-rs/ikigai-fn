@@ -51,6 +51,11 @@ recomputes it.
   output: splice a composed view with `$r`.
 - **Escaping.** `$h` output is safe in element text and in an attribute quoted
   with either quote. Quote every attribute.
+- **Literal text.** `$$` is a literal `$`. To put arbitrary text into a template
+  so that it renders exactly as written, call `escape_markers(text)`;
+  `MARKER_LETTERS` lists the letters that open a marker. Both are built from the
+  list compose's own scanner reads, so a host that uses them instead of a copy
+  cannot fall behind when compose learns a letter.
 - **Template arguments.** Every argument of the request but `src` is a template
   argument, and a marker names one as `{name}`: percent-encoded in an IRI
   (`$h{urn:example:cell:{x}:{y}}`), verbatim as an unquoted value, literal
