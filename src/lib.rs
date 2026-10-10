@@ -269,6 +269,18 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// resource is cached and cut when the resource appears, and one standing in for a
 /// denial or any other failure makes the composite uncacheable.
 ///
+/// **Authority.** Compose is its caller's deputy. The template named by `src`, and every
+/// marker in it at every depth, resolve under the capability the compose request was
+/// issued with — never more: nothing a caller cannot source directly is reachable through
+/// a template, by any marker, fallback, nested compose or view. A template therefore acts
+/// with the authority of whoever FILLS it, not of whoever wrote it, which is what lets a
+/// view read the viewer's own data. The other side of that rule is the caller's to hold:
+/// before filling a template it does not trust — one a peer or a user could have written,
+/// or a `src` forwarded from outside — narrow the capability first
+/// (`Capability::attenuate`, or `Invocation::issue_attenuated` from inside an endpoint);
+/// the narrowing reaches every marker. `tests/authority.rs` pins both halves (ledger
+/// #609).
+///
 /// The `a` is for *asynchronous*: the first alternatives of a level's markers are forked
 /// and joined, so a kernel driven on a concurrent executor resolves them simultaneously,
 /// while a single-threaded executor (the browser, for now) resolves them in turn.
