@@ -64,6 +64,15 @@ recomputes it.
   typed error, unless it names fallbacks: `$h{urn:example:title ||
   urn:example:untitled}`. A fallback for an absent resource is cached and cut
   when the resource appears; one for a denial makes the view uncacheable.
+- **Authority.** A template, and every marker in it, resolves under the
+  capability of whoever fills it — the caller's, never more, so nothing the
+  caller cannot source directly is reachable through compose. That is what lets
+  a view read the viewer's own data; it also means a template acts with the
+  viewer's authority, not its author's. Before filling a template you do not
+  trust (a `src` from outside, a template a peer or a user could write), narrow
+  the capability first — `Capability::attenuate`, or
+  `Invocation::issue_attenuated` inside an endpoint — and the narrowing reaches
+  every marker. `tests/authority.rs` pins both halves.
 - **Views at names.** `compose_over(src)` bound under a URI template makes a
   parameterized view a resource: `urn:example:view:square:{x}:{y}`. That is what
   `conditional` can branch to, and what the cache keys on.
