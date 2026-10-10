@@ -78,6 +78,12 @@
 //!   propagates it unchanged rather than flattening it
 //!   ([`a_gate_on_the_condition_passes_through_as_denied`]).
 //!
+//! ## The space's name
+//!
+//! `space()` is configuration-free, so it claims `urn:iki:space:fn`
+//! ([`ikigai_fn::SPACE_ID`]) and [`conforms`] declares it self-named: SPACE-NAME calls
+//! it twice and holds both calls to the same name over the same doors.
+//!
 //! No whole-endpoint opt-outs, no module namespace (there is no RDF face).
 
 use ikigai_conformance::{Check, Finding, Fixture, Suite};
@@ -109,14 +115,21 @@ const PASS_THROUGH_REASON: &str =
 /// The ids that are not kebab-case: exactly the coordinated-wave exceptions.
 const CAMEL_CASE: [&str; 2] = ["toUpper", "reverseList"];
 
-/// The resources this file binds beside the module for the walk. Each IRI doubles
-/// as the golden thread its threaded variant names — the `ikigai-fs` convention
-/// (`depends_on` the resource's own IRI), so a cut is keyed on the name the caller
-/// resolved.
+/// The resources this file binds beside the module for the walk.
 const SHAPE_IRI: &str = "urn:conformance:shape";
 const FLAG_IRI: &str = "urn:conformance:flag";
 const THEN_IRI: &str = "urn:conformance:then";
 const ELSE_IRI: &str = "urn:conformance:else";
+
+/// The golden thread each threaded resource names: its STATE (the stored body),
+/// not its own IRI. The kernel already hangs every cacheable read on the name it
+/// was read through, so a thread named after the resource itself is no thread at
+/// all to `ikigai-conformance` 0.5+ (only a write through that name would cut
+/// it, and these declare none); a store that changes cuts the state's thread.
+const SHAPE_STORE: &str = "urn:conformance:store:shape";
+const FLAG_STORE: &str = "urn:conformance:store:flag";
+const THEN_STORE: &str = "urn:conformance:store:then";
+const ELSE_STORE: &str = "urn:conformance:store:else";
 
 const SHAPE: &str = "<p>$a{urn:iki:fn:toUpper?in=hi}</p>";
 const SHAPE_EDITED: &str = "<p>$a{urn:iki:fn:toUpper?in=bye}</p>";
@@ -170,7 +183,7 @@ struct Fixtures {
 fn fixtures(threaded: bool) -> Fixtures {
     let shape = Arc::new(RwLock::new(SHAPE));
     let flag = Arc::new(RwLock::new("true"));
-    let thread = |iri: &'static str| threaded.then_some(iri);
+    let thread = |store: &'static str| threaded.then_some(store);
     let space = ikigai_fn::space()
         .bind(
             Exact::new(SHAPE_IRI),
@@ -178,12 +191,17 @@ fn fixtures(threaded: bool) -> Fixtures {
                 SHAPE_IRI,
                 "text/html",
                 Arc::clone(&shape),
-                thread(SHAPE_IRI),
+                thread(SHAPE_STORE),
             ),
         )
         .bind(
             Exact::new(FLAG_IRI),
-            resource(FLAG_IRI, "text/plain", Arc::clone(&flag), thread(FLAG_IRI)),
+            resource(
+                FLAG_IRI,
+                "text/plain",
+                Arc::clone(&flag),
+                thread(FLAG_STORE),
+            ),
         )
         .bind(
             Exact::new(THEN_IRI),
@@ -191,7 +209,7 @@ fn fixtures(threaded: bool) -> Fixtures {
                 THEN_IRI,
                 "text/plain",
                 Arc::new(RwLock::new("branch-then")),
-                thread(THEN_IRI),
+                thread(THEN_STORE),
             ),
         )
         .bind(
@@ -200,7 +218,7 @@ fn fixtures(threaded: bool) -> Fixtures {
                 ELSE_IRI,
                 "text/plain",
                 Arc::new(RwLock::new("branch-else")),
-                thread(ELSE_IRI),
+                thread(ELSE_STORE),
             ),
         );
     Fixtures {
@@ -267,8 +285,13 @@ fn conforms() {
                 .arg("then", THEN_IRI)
                 .arg("else", ELSE_IRI),
         );
+    // `space()` is configuration-free, so it names itself; the fixtures' kernel
+    // above extends it with `.bind`, which drops the name (core 0.1.89), so the
+    // walk and the name check see two different spaces, as they should.
+    let suite = suite.self_named_space("fn", ikigai_fn::space);
     let report = suite.run_blocking(&kernel);
     eprintln!("{report}");
+    assert_eq!(ikigai_core::space_iri("fn").as_str(), ikigai_fn::SPACE_ID);
 
     // NAMES reports exactly the coordinated-wave exceptions — no more (a new
     // camelCase id), no fewer (the rename landed: retire this pin with it).
@@ -336,7 +359,7 @@ fn a_composite_is_as_cacheable_as_its_shape() {
     assert_eq!(first.bytes, b"<p>HI</p>");
     assert_eq!(first.expiry, Expiry::Never);
     assert!(
-        first.threads().iter().any(|t| t.to_string() == SHAPE_IRI),
+        first.threads().iter().any(|t| t.to_string() == SHAPE_STORE),
         "the composite carries the shape's thread: {:?}",
         first.threads()
     );
@@ -352,7 +375,7 @@ fn a_composite_is_as_cacheable_as_its_shape() {
         "an edit with no cut is served from the cache"
     );
 
-    kernel.cut(SHAPE_IRI);
+    kernel.cut(SHAPE_STORE);
     assert_eq!(
         text(&kernel, compose_request()),
         "<p>BYE</p>",
@@ -371,11 +394,11 @@ fn a_conditional_recomputes_when_its_condition_is_cut() {
     assert_eq!(first.expiry, Expiry::Never);
     let threads: BTreeSet<String> = first.threads().iter().map(|t| t.to_string()).collect();
     assert!(
-        threads.contains(FLAG_IRI) && threads.contains(THEN_IRI),
+        threads.contains(FLAG_STORE) && threads.contains(THEN_STORE),
         "the condition's and the taken branch's threads, not the untaken one's: {threads:?}"
     );
     assert!(
-        !threads.contains(ELSE_IRI),
+        !threads.contains(ELSE_STORE),
         "the untaken branch was never sourced: {threads:?}"
     );
     assert!(kernel.is_cached(&conditional_request(true), &Capability::root()));
@@ -383,7 +406,7 @@ fn a_conditional_recomputes_when_its_condition_is_cut() {
     *flag.write().expect("flag lock") = "false";
     assert_eq!(text(&kernel, conditional_request(true)), "branch-then");
 
-    kernel.cut(FLAG_IRI);
+    kernel.cut(FLAG_STORE);
     assert_eq!(
         text(&kernel, conditional_request(true)),
         "branch-else",
@@ -402,11 +425,11 @@ fn a_false_condition_with_no_else_is_cached_under_the_condition() {
     let first = issue(&kernel, conditional_request(false)).unwrap();
     assert!(first.bytes.is_empty());
     assert_eq!(first.expiry, Expiry::Never);
-    assert!(first.threads().iter().any(|t| t.to_string() == FLAG_IRI));
+    assert!(first.threads().iter().any(|t| t.to_string() == FLAG_STORE));
     assert!(kernel.is_cached(&conditional_request(false), &Capability::root()));
 
     *flag.write().expect("flag lock") = "true";
-    kernel.cut(FLAG_IRI);
+    kernel.cut(FLAG_STORE);
     assert_eq!(text(&kernel, conditional_request(false)), "branch-then");
 }
 
@@ -451,12 +474,12 @@ fn the_served_type_follows_the_source() {
                     SHAPE_IRI,
                     media_type,
                     Arc::new(RwLock::new(SHAPE)),
-                    Some(SHAPE_IRI),
+                    Some(SHAPE_STORE),
                 ),
             )
             .bind(
                 Exact::new(FLAG_IRI),
-                resource(FLAG_IRI, "text/plain", Arc::clone(&flag), Some(FLAG_IRI)),
+                resource(FLAG_IRI, "text/plain", Arc::clone(&flag), Some(FLAG_STORE)),
             )
             .bind(
                 Exact::new(THEN_IRI),
@@ -464,7 +487,7 @@ fn the_served_type_follows_the_source() {
                     THEN_IRI,
                     media_type,
                     Arc::new(RwLock::new("branch-then")),
-                    Some(THEN_IRI),
+                    Some(THEN_STORE),
                 ),
             );
         let kernel = Kernel::new(Arc::new(space));
@@ -492,7 +515,7 @@ fn the_served_type_follows_the_source() {
         // Declared, it would pass the walk over a `text/plain` fixture while telling a
         // consumer that the Turtle branch above comes back as plain text.
         *flag.write().expect("flag lock") = "false";
-        kernel.cut(FLAG_IRI);
+        kernel.cut(FLAG_STORE);
         let empty = issue(&kernel, conditional_request(false)).expect("the no-op resolves");
         assert!(empty.bytes.is_empty());
         assert_eq!(empty.repr_type.media_type, "text/plain");
@@ -558,7 +581,7 @@ fn required_inputs_are_required() {
     // `then` is required whatever `if` says: the laziness is in the sourcing, not
     // the contract. A false condition without `then` used to succeed (empty).
     *flag.write().expect("flag lock") = "false";
-    kernel.cut(FLAG_IRI);
+    kernel.cut(FLAG_STORE);
     match issue(
         &kernel,
         request("urn:iki:fn:conditional", &[("if", FLAG_IRI)]),
@@ -597,7 +620,7 @@ fn classed_inputs_are_held_to_their_class() {
     );
     // `if` is false: now `then` is the untaken branch.
     *flag.write().expect("flag lock") = "false";
-    kernel.cut(FLAG_IRI);
+    kernel.cut(FLAG_STORE);
     expect_invalid(
         request(
             "urn:iki:fn:conditional",
@@ -638,7 +661,7 @@ fn a_gate_on_the_condition_passes_through_as_denied() {
             THEN_IRI,
             "text/plain",
             Arc::new(RwLock::new("branch-then")),
-            Some(THEN_IRI),
+            Some(THEN_STORE),
         ),
     );
     let kernel = Kernel::new(Arc::new(space));
