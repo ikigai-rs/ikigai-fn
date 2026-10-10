@@ -112,6 +112,8 @@ passed the walk because the fixture was HTML.
 
 ## Usage
 
+`space()` names itself `urn:iki:space:fn` (`ikigai_fn::SPACE_ID`); a space you extend with `.bind` is anonymous until you name it.
+
 Mount the whole library at its conventional IRIs and chain your own bindings on
 top (`EndpointSpace::bind` is a builder):
 

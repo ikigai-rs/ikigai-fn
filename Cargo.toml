@@ -14,19 +14,23 @@ categories = ["wasm"]
 [dependencies]
 # The released kernel, consumed from crates.io — the SAME version the hosts use,
 # so a host links exactly one `ikigai-core` (no duplicate-crate type mismatch).
-ikigai-core = "0.1.73" # a failed sub-request is a dependency (0.1.73), which is what makes a compose fallback cacheable AND cut when the missing part appears
+# 0.1.89: `space_iri`, and `bind` dropping a name, which is what lets `space()` name
+# itself while a host that extends it stays anonymous. (0.1.73 was the floor before:
+# a failed sub-request is a dependency, which makes a compose fallback cacheable AND
+# cut when the missing part appears.) Under 0.x this caret is also a ceiling: <0.2.0.
+ikigai-core = "0.1.89"
 async-trait = "0.1"
 futures-util = "0.3"
 
 [dev-dependencies]
 futures = "0.3"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
-# endpoint and reports every violation at once. 0.2.0 adds `Suite::opt_out_check`,
-# the per-CHECK waiver the two pass-through resolvers need (a whole-endpoint
-# `opt_out` would drop ENFORCED and CACHEABLE with it).
-ikigai-conformance = "0.2.0"
+# endpoint and reports every violation at once. 0.6.0 adds SPACE-NAME (the
+# `self_named_space` declaration); `Suite::opt_out_check` (0.2.0) is the per-CHECK
+# waiver the two pass-through resolvers need (a whole-endpoint `opt_out` would drop
+# ENFORCED and CACHEABLE with it). A 0.x caret: this admits <0.7.0 only.
+ikigai-conformance = "0.6.0"
 # Only the tests: `tests/declared_views.rs` proves named views against core's builder
 # (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.
-# The library itself needs nothing past 0.1.73 — a name is plain `Endpoint::name` — so
-# the floor above stays where it is and no host is pulled forward by this crate.
-ikigai-core = { version = "0.1.83", features = ["declare"] }
+# The version matches the library floor above; only the feature is test-only.
+ikigai-core = { version = "0.1.89", features = ["declare"] }

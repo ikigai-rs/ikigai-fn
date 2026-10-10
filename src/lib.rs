@@ -20,8 +20,8 @@ use async_trait::async_trait;
 use futures_util::future::try_join_all;
 
 use ikigai_core::{
-    ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, FnEndpoint, Invocation,
-    Iri, ReprType, Representation, Request, Result, UriTemplate, Verb,
+    space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, FnEndpoint,
+    Invocation, Iri, ReprType, Representation, Request, Result, UriTemplate, Verb,
 };
 
 /// The conventional `text/plain; charset=utf-8` representation type.
@@ -1165,6 +1165,9 @@ fn utf8_len(first: u8) -> usize {
 
 // --- the library as a mountable space -------------------------------------
 
+/// The name [`space`] claims: `urn:iki:space:fn`.
+pub const SPACE_ID: &str = "urn:iki:space:fn";
+
 /// The reusable function library as a mountable [`EndpointSpace`], binding every
 /// function at its conventional IRI. A host mounts this and chains its own
 /// host-specific bindings on top — `EndpointSpace::bind` is a builder, so:
@@ -1177,6 +1180,22 @@ fn utf8_len(first: u8) -> usize {
 ///
 /// Hosts that want different IRIs (binding authority is a host concern) can
 /// instead pull the individual constructors and bind them as they like.
+///
+/// The space is configuration-free (no parameters, nothing read while building
+/// it), so it names itself [`SPACE_ID`]. A host that extends it with `.bind`
+/// gets an anonymous space back (core 0.1.89 drops the name on a new door), and
+/// names its own composition if it wants one.
+///
+/// ```
+/// use ikigai_core::{Exact, Space};
+///
+/// assert_eq!(
+///     ikigai_fn::space().id().map(|iri| iri.as_str().to_owned()).as_deref(),
+///     Some(ikigai_fn::SPACE_ID)
+/// );
+/// let extended = ikigai_fn::space().bind(Exact::new("urn:host:page"), ikigai_fn::echo());
+/// assert!(extended.id().is_none(), "different doors, no inherited name");
+/// ```
 pub fn space() -> EndpointSpace {
     let echo_template = UriTemplate::parse("urn:demo:echo/{message}").expect("valid template");
     EndpointSpace::new()
@@ -1188,6 +1207,7 @@ pub fn space() -> EndpointSpace {
         .bind(Exact::new("urn:demo:split"), split())
         .bind(Exact::new("urn:demo:greet"), greet())
         .bind(echo_template, echo())
+        .named(space_iri("fn"))
 }
 
 #[cfg(test)]
