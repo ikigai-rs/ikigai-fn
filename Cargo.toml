@@ -25,11 +25,13 @@ futures-util = "0.3"
 [dev-dependencies]
 futures = "0.3"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
-# endpoint and reports every violation at once. 0.6.0 adds SPACE-NAME (the
-# `self_named_space` declaration); `Suite::opt_out_check` (0.2.0) is the per-CHECK
-# waiver the two pass-through resolvers need (a whole-endpoint `opt_out` would drop
-# ENFORCED and CACHEABLE with it). A 0.x caret: this admits <0.7.0 only.
-ikigai-conformance = "0.6.0"
+# endpoint and reports every violation at once. 0.8.0 adds REQUIRED (each required
+# input dropped must be a typed refusal) after 0.7.0's VALIDATE; 0.6.0 added
+# SPACE-NAME (the `self_named_space` declaration); `Suite::opt_out_check` (0.2.0) is
+# the per-CHECK waiver the two pass-through resolvers need (a whole-endpoint
+# `opt_out` would drop ENFORCED and CACHEABLE with it). A 0.x caret: this admits
+# <0.9.0 only.
+ikigai-conformance = "0.8.0"
 # Only the tests: `tests/declared_views.rs` proves named views against core's builder
 # (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.
 # The version matches the library floor above; only the feature is test-only.

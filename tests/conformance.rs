@@ -54,7 +54,11 @@
 //! - **Required is required** (PENDING #49/#99): every required by-value input,
 //!   dropped from a working call, is a `MissingArgument` — including `conditional`'s
 //!   `then` when `if` is false, which for four releases was demanded only on the
-//!   taken side ([`required_inputs_are_required`]).
+//!   taken side ([`required_inputs_are_required`]). Since `ikigai-conformance` 0.8.0
+//!   the walk's `REQUIRED` check drops each required input too, but only from the
+//!   fixture's call (a true flag, so the taken side), and it accepts either typed
+//!   refusal; the hand test keeps the untaken branch and pins `MissingArgument`
+//!   naming the input.
 //! - **A class is enforced** (PENDING #118/#124): a non-IRI in an `xsd:anyURI`
 //!   input is an `InvalidArgument` naming that input, on the UNTAKEN branch too;
 //!   non-UTF-8 bytes in an `xsd:string` input likewise
