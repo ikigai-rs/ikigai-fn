@@ -583,8 +583,8 @@ impl Endpoint for Conditional {
         Description::new("conditional")
             .title("Conditional")
             .summary(
-                "Sources `if` and reads it as a boolean (true/false/1/0/yes/no) — or, with \
-                 `equals`, tests whether its trimmed text is exactly that value — then \
+                "Sources `if` and reads it as a boolean (true/false/1/0/yes/no/on/off) — or, \
+                 with `equals`, tests whether its trimmed text is exactly that value — then \
                  sources and returns ONLY `then` (when true) or the optional `else` (when \
                  false); the untaken branch is never invoked. A false condition with no \
                  `else` returns nothing. The lazy counterpart to compose's eager fan-out.",
@@ -657,7 +657,7 @@ fn as_bool(bytes: &[u8], iri: &Iri) -> Result<bool> {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" | "" => Ok(false),
         other => Err(Error::Endpoint(format!(
-            "conditional: `{}` returned {other:?}, not a boolean (true/false/1/0/yes/no)",
+            "conditional: `{}` returned {other:?}, not a boolean (true/false/1/0/yes/no/on/off)",
             iri.as_str()
         ))),
     }
@@ -1411,6 +1411,28 @@ mod tests {
     #[test]
     fn a_non_boolean_condition_errors() {
         assert!(cond(&cond_kernel(), "urn:test:maybe", "urn:test:A", None).is_err());
+    }
+
+    /// The spellings the summary and the refusal list are exactly the ones `as_bool`
+    /// accepts: the list once omitted `on`/`off`, and a Deno port copied it (ledger #627).
+    #[test]
+    fn the_stated_boolean_spellings_are_the_accepted_ones() {
+        const STATED: &str = "(true/false/1/0/yes/no/on/off)";
+        let iri = Iri::parse("urn:test:x").unwrap();
+        let refusal = as_bool(b"maybe", &iri).unwrap_err().to_string();
+        assert!(refusal.contains(STATED), "refusal: {refusal}");
+        assert!(
+            conditional().describe().summary.contains(STATED),
+            "summary lists the accepted spellings"
+        );
+        let words = STATED.trim_matches(|c| c == '(' || c == ')').split('/');
+        for (i, word) in words.enumerate() {
+            assert_eq!(
+                as_bool(word.as_bytes(), &iri).unwrap(),
+                i % 2 == 0,
+                "{word}"
+            );
+        }
     }
 
     #[test]
