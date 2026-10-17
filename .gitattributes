@@ -1,0 +1,5 @@
+# Line endings: LF in the repository AND in every checkout, whatever core.autocrlf says.
+# The shared HTML vectors are copied VERBATIM into other faces (Python, Deno, XSLT), and
+# devtools `vector-drift` compares such copies byte for byte, so a CRLF checkout is drift.
+# Ledger #1813 (the pattern is ledger #1205 / #1341).
+tests/vectors/*.json text eol=lf

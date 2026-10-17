@@ -13,6 +13,8 @@
 //! constructors and binds them at IRIs of its choosing, or mounts the whole
 //! library at its conventional IRIs with [`space`].
 
+pub mod html;
+
 use std::future::Future;
 use std::pin::Pin;
 
@@ -230,11 +232,13 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// computing"}`); a literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
 /// [`escape_markers`] writes any text that way, and [`MARKER_LETTERS`] lists the letters.
 ///
-/// **Escaping.** `$h` replaces `&`, `<`, `>`, `"` and `'` with `&amp;`, `&lt;`, `&gt;`,
-/// `&quot;` and `&#39;`, so its output is safe in element text and inside an attribute
-/// value quoted with either quote. It is not safe in an UNQUOTED attribute value (a space
-/// ends one), and no escaping makes a URL attribute safe from a `javascript:` value: quote
-/// every attribute, and put values, not whole URLs, in `href`.
+/// **Escaping.** `$h` escapes with [`html::html_text`]: `&`, `<`, `>`, `"` and `'` become
+/// `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&#39;` (and a C0 control other than tab, line feed
+/// and carriage return becomes U+FFFD), so its output is safe in element text and inside an
+/// attribute value quoted with either quote. It is not safe in an UNQUOTED attribute value
+/// (a space ends one), and no escaping makes a URL attribute safe from a `javascript:`
+/// value: quote every attribute, and put values, not whole URLs, in `href` (a whole URL
+/// from data goes through [`html::safe_href`]).
 ///
 /// **Terminate.** Only `$a` expands what it splices. Content read from an atom — user
 /// data, a peer, a file — goes in through `$h` (or `$r`, for markup you trust), so a
@@ -247,8 +251,9 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// [`compose_over`], every variable its name captured, which wins over an argument of
 /// the same name — is a template argument, and a marker names one as `{name}`:
 ///
-/// - in the IRI its value is percent-encoded, as RFC 6570 expands a simple variable, so
-///   an argument can never add a path segment, a query or an argument:
+/// - in the IRI its value is percent-encoded with [`html::url_segment`], as RFC 6570
+///   expands a simple variable, so an argument can never add a path segment, a query
+///   or an argument:
 ///   `$h{urn:example:cell:{x}:{y}}`;
 /// - in an unquoted argument value it IS the value, verbatim, and still one value:
 ///   `$r{urn:iki:fn:toUpper?in={name}}`;
@@ -968,7 +973,7 @@ async fn splice(
     match (mode, String::from_utf8(repr.bytes)) {
         (Mode::Transclude, Ok(text)) => expand(inv, text, depth + 1).await,
         (Mode::Raw, Ok(text)) => Ok(text),
-        (Mode::Html, Ok(text)) => Ok(escape_html(&text)),
+        (Mode::Html, Ok(text)) => Ok(html::html_text(&text)),
         // A value spliced into HTML must be text: a placeholder here would be escaped
         // into visible garbage, or land inside an attribute.
         (Mode::Html, Err(e)) => Err(Error::Endpoint(format!(
@@ -986,26 +991,9 @@ async fn splice(
 /// when the marker is parsed, so a value is never expanded.)
 fn splice_value(mode: Mode, value: String) -> String {
     match mode {
-        Mode::Html => escape_html(&value),
+        Mode::Html => html::html_text(&value),
         Mode::Raw | Mode::Transclude => value,
     }
-}
-
-/// `text`, safe in HTML element text and in an attribute value quoted with either
-/// quote: `&`, `<`, `>`, `"` and `'` become `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#39;`.
-fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 /// The value of the template argument `name`: the variable the name captured, else the
@@ -1184,7 +1172,7 @@ fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<
             .expect("placeholders are checked when parsed");
         let value = template_arg(inv, &after[..close])?;
         if encode {
-            percent_encode(&value, &mut out);
+            html::push_url_segment(&value, &mut out);
         } else {
             out.push_str(&value);
         }
@@ -1218,18 +1206,6 @@ fn is_arg_name(name: &str) -> bool {
         .next()
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-/// Append `value` percent-encoded as RFC 6570 expands a simple variable: every byte
-/// outside the unreserved set (`A-Z a-z 0-9 - . _ ~`) as `%XX`.
-fn percent_encode(value: &str, out: &mut String) {
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
 }
 
 /// The text of a double-quoted marker argument value, `\"` and `\\` unescaped, or

@@ -101,6 +101,25 @@ state, recomputed by a write to one cell.
 
 `$a{…}` behaves exactly as it did in 0.2.x, and its tests are unchanged.
 
+## Escaping and links: `ikigai_fn::html`
+
+One rule for every HTML door that builds markup from data (ledger #1813), so a page
+built in Rust, a `compose` template and a port in another language agree:
+
+| Where the value goes | Function |
+|---|---|
+| element text | `html_text` (`&<>"'` escaped; a C0 control other than tab, LF, CR becomes U+FFFD) |
+| a quoted attribute, either quote | `attr` (the same output) |
+| one path segment or query value | `url_segment` (RFC 3986 unreserved kept, every other byte `%XX`) |
+| a whole link target from data | `safe_href`, then `attr`: `Some` only for `http://`, `https://` (any case) or a single-`/` path; `None` means render text |
+| htmx `hx-vals` | `json_attr` (a JSON object of strings, escaped for an attribute) |
+
+`compose`'s `$h{…}` escapes with `html_text` and percent-encodes IRI arguments with
+`url_segment`, so there is one implementation. The contract is the shared vectors file
+[`tests/vectors/html_vectors.json`](tests/vectors/html_vectors.json): hand-written inputs
+and outputs that `tests/html_vectors.rs` runs, and that a Python, Deno or XSLT port keeps
+a verbatim copy of and runs the same way.
+
 ## Conformance
 
 `space()` passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
