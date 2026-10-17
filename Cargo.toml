@@ -24,6 +24,9 @@ futures-util = "0.3"
 
 [dev-dependencies]
 futures = "0.3"
+# Only `tests/html_vectors.rs`, which reads the shared vectors file (ledger #1813). Already in
+# the graph through ikigai-core; 1.0 is every serde_json there is.
+serde_json = "1.0"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
 # endpoint and reports every violation at once. 0.8.0 adds REQUIRED (each required
 # input dropped must be a typed refusal) after 0.7.0's VALIDATE; 0.6.0 added
