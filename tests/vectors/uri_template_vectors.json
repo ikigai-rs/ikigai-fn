@@ -1,0 +1,52 @@
+{
+  "about": "RFC 6570 expansion vectors for the two expression forms compose supports, simple {var} and reserved {+var} (ledger #2132). The canonical copy is ikigai-fn's tests/vectors/uri_template_vectors.json, consumed by tests/uri_template_vectors.rs; a port (Python, Deno) keeps a VERBATIM copy and runs every case. 'variables' are the RFC's own example variables (section 3.2). Each template case is {template, out, source}: source 'rfc6570 section N' marks an example copied from the RFC, where every expression names ONE defined variable (compose supports no lists, no undefined variables, no other operators); 'ikigai' marks a case added here, with 'why'. The 'values' cases pin the per-value rule directly: html::url_segment is simple expansion, html::url_reserved is reserved expansion.",
+  "variables": {
+    "var": "value",
+    "hello": "Hello World!",
+    "path": "/foo/bar",
+    "empty": "",
+    "x": "1024",
+    "y": "768",
+    "half": "50%",
+    "base": "http://example.com/home/",
+    "item": "item:default:5",
+    "pct": "a%2Fb",
+    "accent": "café",
+    "delims": ":/?#[]@!$&'()*+,;="
+  },
+  "templates": [
+    { "template": "{var}", "out": "value", "source": "rfc6570 section 1.2" },
+    { "template": "{hello}", "out": "Hello%20World%21", "source": "rfc6570 section 1.2" },
+    { "template": "{+var}", "out": "value", "source": "rfc6570 section 1.2" },
+    { "template": "{+hello}", "out": "Hello%20World!", "source": "rfc6570 section 1.2" },
+    { "template": "{+path}/here", "out": "/foo/bar/here", "source": "rfc6570 section 1.2" },
+    { "template": "here?ref={+path}", "out": "here?ref=/foo/bar", "source": "rfc6570 section 1.2" },
+    { "template": "{half}", "out": "50%25", "source": "rfc6570 section 3.2.2" },
+    { "template": "O{empty}X", "out": "OX", "source": "rfc6570 section 3.2.2" },
+    { "template": "{+half}", "out": "50%25", "source": "rfc6570 section 3.2.3" },
+    { "template": "{base}index", "out": "http%3A%2F%2Fexample.com%2Fhome%2Findex", "source": "rfc6570 section 3.2.3" },
+    { "template": "{+base}index", "out": "http://example.com/home/index", "source": "rfc6570 section 3.2.3" },
+    { "template": "O{+empty}X", "out": "OX", "source": "rfc6570 section 3.2.3" },
+    { "template": "up{+path}{var}/here", "out": "up/foo/barvalue/here", "source": "rfc6570 section 3.2.3" },
+    { "template": "{path}/here", "out": "%2Ffoo%2Fbar/here", "source": "ikigai", "why": "the simple form of the RFC's {+path}/here: never the default, / is encoded" },
+    { "template": "urn:example:page:{+item}", "out": "urn:example:page:item:default:5", "source": "ikigai", "why": "the case behind ledger #2132: a host-fixed page name with : reaches its target whole" },
+    { "template": "urn:example:page:{item}", "out": "urn:example:page:item%3Adefault%3A5", "source": "ikigai", "why": "the same name under simple expansion is one segment" },
+    { "template": "{+pct}", "out": "a%2Fb", "source": "ikigai", "why": "reserved expansion passes a well-formed pct-encoded triplet through (RFC 6570 section 3.2.3)" },
+    { "template": "{pct}", "out": "a%252Fb", "source": "ikigai", "why": "simple expansion encodes the % of a triplet" },
+    { "template": "{+accent}", "out": "caf%C3%A9", "source": "ikigai", "why": "a character outside U+R is encoded over its UTF-8 bytes in both forms" },
+    { "template": "{+delims}", "out": ":/?#[]@!$&'()*+,;=", "source": "ikigai", "why": "every reserved character passes reserved expansion" },
+    { "template": "{delims}", "out": "%3A%2F%3F%23%5B%5D%40%21%24%26%27%28%29%2A%2B%2C%3B%3D", "source": "ikigai", "why": "and none passes simple expansion" }
+  ],
+  "values": [
+    { "in": "", "simple": "", "reserved": "" },
+    { "in": "AZaz09-._~", "simple": "AZaz09-._~", "reserved": "AZaz09-._~" },
+    { "in": "Hello World!", "simple": "Hello%20World%21", "reserved": "Hello%20World!" },
+    { "in": "50%", "simple": "50%25", "reserved": "50%25" },
+    { "in": "%4", "simple": "%254", "reserved": "%254", "why": "a % without two hex digits after it is not a triplet" },
+    { "in": "%zz", "simple": "%25zz", "reserved": "%25zz" },
+    { "in": "%4a%4A", "simple": "%254a%254A", "reserved": "%4a%4A", "why": "a triplet passes as written, its hex case kept" },
+    { "in": "a b\"<>\\^`{|}", "simple": "a%20b%22%3C%3E%5C%5E%60%7B%7C%7D", "reserved": "a%20b%22%3C%3E%5C%5E%60%7B%7C%7D", "why": "characters outside U+R are encoded in both forms" },
+    { "in": "café ✓", "simple": "caf%C3%A9%20%E2%9C%93", "reserved": "caf%C3%A9%20%E2%9C%93" },
+    { "in": "item:default:5", "simple": "item%3Adefault%3A5", "reserved": "item:default:5" }
+  ]
+}

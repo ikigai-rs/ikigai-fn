@@ -154,6 +154,71 @@ fn an_argument_in_an_iri_is_percent_encoded() {
     );
 }
 
+/// `{+name}` is RFC 6570's reserved expansion: a reserved character (`:`, `/`, `?`, `#`, …)
+/// and a well-formed `%XX` pass through, and everything else is encoded as `{name}` encodes
+/// it. So a host-fixed name with `:` in it (`item:default:5`) reaches its target whole
+/// (ledger #2132).
+#[test]
+fn a_reserved_argument_keeps_reserved_characters() {
+    let kernel = kernel_with("$h{urn:example:name:{+v}}", base());
+    assert_eq!(
+        compose(&kernel, "urn:example:page", &[("v", "item:default:5")]).unwrap(),
+        "urn:example:name:item:default:5"
+    );
+    assert_eq!(
+        compose(&kernel, "urn:example:page", &[("v", "a b/c?d&e=f%2F50%")]).unwrap(),
+        "urn:example:name:a%20b/c?d&amp;e=f%2F50%25"
+    );
+}
+
+/// Reserved expansion is never the default: beside `{+v}`, a plain `{v}` still encodes
+/// `/`, `?`, `#` and `:`.
+#[test]
+fn a_simple_argument_beside_a_reserved_one_still_encodes() {
+    let kernel = kernel_with("$h{urn:example:name:{+v}.{w}}", base());
+    assert_eq!(
+        compose(
+            &kernel,
+            "urn:example:page",
+            &[("v", "a:b"), ("w", "c/d?e#f:g")]
+        )
+        .unwrap(),
+        "urn:example:name:a:b.c%2Fd%3Fe%23f%3Ag"
+    );
+}
+
+/// A reserved argument never chooses the scheme: the template's own text before a `{+name}`
+/// holds a `:`, or the marker is refused when parsed — so `$r{{+x}}` cannot name any resource
+/// the request likes.
+#[test]
+fn a_reserved_argument_cannot_open_the_iri() {
+    for template in ["$r{{+x}}", "$r{{+x}:y}", "$r{urn{+x}}", "$r{{y}:{+x}}"] {
+        let kernel = kernel_with(template, base());
+        let refused = compose(
+            &kernel,
+            "urn:example:page",
+            &[("x", "urn:example:mark"), ("y", "urn")],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&refused, Error::Endpoint(detail) if detail.contains("scheme")),
+            "{template}: {refused:?}"
+        );
+    }
+}
+
+/// `{+name}` belongs in an IRI. In an unquoted argument value `{name}` is already the value
+/// verbatim, so `{+name}` there is refused rather than read as something it is not.
+#[test]
+fn a_reserved_argument_in_a_value_is_refused() {
+    let kernel = kernel_with("$h{urn:iki:fn:toUpper?in={+v}}", base());
+    let refused = compose(&kernel, "urn:example:page", &[("v", "x")]).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Endpoint(detail) if detail.contains("only in the IRI")),
+        "{refused:?}"
+    );
+}
+
 /// In an unquoted value an argument is the value, whole — an `&` in it does not start a
 /// second argument — and in a quoted value `{…}` is literal text.
 #[test]
