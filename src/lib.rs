@@ -255,6 +255,17 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 ///   expands a simple variable, so an argument can never add a path segment, a query
 ///   or an argument:
 ///   `$h{urn:example:cell:{x}:{y}}`;
+/// - in the IRI, `{+name}` is RFC 6570's RESERVED expansion ([`html::url_reserved`]): a
+///   reserved character (`: / ? # [ ] @ ! $ & ' ( ) * + , ; =`) and a well-formed `%XX`
+///   pass through, everything else is encoded, so a name with `:` in it reaches its target
+///   whole: `$r{urn:example:fragment:{+page}}` with `page=item:default:5` sources
+///   `urn:example:fragment:item:default:5` (ledger #2132). ⚠ **Use it only for a value the
+///   HOST fixed** — a variable a [`compose_over`] binding captured from a name the host
+///   bound, under a prefix the host owns. Never for a request argument: `/`, `?`, `#` and
+///   `:` survive, so the value can pick any resource under the prefix. The template's own
+///   text before its first argument must hold the scheme and its `:`, so a reserved
+///   argument never chooses the scheme (`$r{{+x}}` is refused when parsed); `{+name}` in an
+///   argument value is refused too, since `{name}` there is already verbatim;
 /// - in an unquoted argument value it IS the value, verbatim, and still one value:
 ///   `$r{urn:iki:fn:toUpper?in={name}}`;
 /// - in a quoted value it is literal text: `in="{name}"` passes six characters.
@@ -1094,7 +1105,7 @@ fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
             Some((iri, query)) => (iri.trim(), Some(query)),
             None => (alt, None),
         };
-        check_placeholders(iri).map_err(refuse)?;
+        check_placeholders(iri, true).map_err(refuse)?;
         let mut args = Vec::new();
         if let Some(query) = query {
             for pair in split_outside_quotes(query, "&") {
@@ -1114,7 +1125,7 @@ fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
                         literal: true,
                     },
                     None => {
-                        check_placeholders(value).map_err(refuse)?;
+                        check_placeholders(value, false).map_err(refuse)?;
                         Value {
                             text: value.to_string(),
                             literal: false,
@@ -1159,8 +1170,9 @@ fn build_request(
 }
 
 /// Every `{name}` in `template` replaced by that argument's value — percent-encoded
-/// when `encode` (in an IRI), verbatim otherwise (as one argument value). The
-/// placeholders were checked when the marker was parsed.
+/// when `encode` (in an IRI), verbatim otherwise (as one argument value) — and, in an IRI,
+/// every `{+name}` by its value under RFC 6570's reserved expansion. The placeholders were
+/// checked when the marker was parsed.
 fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
@@ -1170,11 +1182,14 @@ fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<
         let close = after
             .find('}')
             .expect("placeholders are checked when parsed");
-        let value = template_arg(inv, &after[..close])?;
-        if encode {
-            html::push_url_segment(&value, &mut out);
-        } else {
-            out.push_str(&value);
+        let inner = &after[..close];
+        match inner.strip_prefix('+') {
+            Some(name) => {
+                debug_assert!(encode, "`{{+name}}` is refused outside an IRI when parsed");
+                html::push_url_reserved(&template_arg(inv, name)?, &mut out);
+            }
+            None if encode => html::push_url_segment(&template_arg(inv, inner)?, &mut out),
+            None => out.push_str(&template_arg(inv, inner)?),
         }
         rest = &after[close + 1..];
     }
@@ -1182,17 +1197,38 @@ fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<
     Ok(out)
 }
 
-/// Refuse a `{` that does not open a `{name}` argument.
-fn check_placeholders(template: &str) -> std::result::Result<(), String> {
+/// Refuse a `{` that does not open a `{name}` argument — or, in an IRI (`in_iri`), a
+/// `{+name}` one, whose reserved expansion lets `:` through, so it must come after the
+/// scheme: the template's own text before its FIRST placeholder holds a `:` (an argument
+/// before that would choose the scheme). Outside an IRI `{+name}` is
+/// refused, since an unquoted value already takes `{name}` verbatim.
+fn check_placeholders(template: &str, in_iri: bool) -> std::result::Result<(), String> {
+    let scheme_fixed = template[..template.find('{').unwrap_or(template.len())].contains(':');
     let mut rest = template;
     while let Some(open) = rest.find('{') {
         let after = &rest[open + 1..];
         let close = after
             .find('}')
             .ok_or_else(|| "a `{` is never closed".to_string())?;
-        let name = &after[..close];
-        if !is_arg_name(name) {
-            return Err(format!("`{{{name}}}` is not an argument name"));
+        let inner = &after[..close];
+        match inner.strip_prefix('+') {
+            Some(name) if is_arg_name(name) => {
+                if !in_iri {
+                    return Err(format!(
+                        "`{{{inner}}}` (reserved expansion) belongs only in the IRI; in an \
+                         unquoted value `{{{name}}}` is already the value, verbatim"
+                    ));
+                }
+                if !scheme_fixed {
+                    return Err(format!(
+                        "`{{{inner}}}` would let an argument choose the IRI's scheme — the \
+                         template's text before its first argument must hold the scheme and \
+                         its `:`"
+                    ));
+                }
+            }
+            _ if is_arg_name(inner) => {}
+            _ => return Err(format!("`{{{inner}}}` is not an argument name")),
         }
         rest = &after[close + 1..];
     }

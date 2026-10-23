@@ -10,6 +10,7 @@
 //! | element text: `<p>{}</p>` | [`html_text`] |
 //! | a quoted attribute: `title="{}"` or `title='{}'` | [`attr`] |
 //! | one path segment or query value: `/item/{}?q={}` | [`url_segment`] |
+//! | a HOST-fixed name whose `:` and `/` must survive (never request data) | [`url_reserved`] |
 //! | a whole link target from data: `href="{}"` | [`safe_href`], then [`attr`] |
 //! | htmx's `hx-vals='{}'` | [`json_attr`] |
 //!
@@ -107,6 +108,88 @@ pub(crate) fn push_url_segment(value: &str, out: &mut String) {
             out.push(char::from(HEX[usize::from(byte >> 4)]));
             out.push(char::from(HEX[usize::from(byte & 0xF)]));
         }
+    }
+}
+
+/// `value` under RFC 6570's RESERVED expansion (`{+var}`, section 3.2.3): RFC 3986's
+/// unreserved characters (`A-Z a-z 0-9 - . _ ~`), its reserved characters (the gen-delims
+/// `: / ? # [ ] @` and the sub-delims `! $ & ' ( ) * + , ; =`) and every well-formed
+/// percent-encoded triplet (`%` and two hex digits) pass through unchanged; every other byte
+/// of the value's UTF-8 becomes `%XX`, uppercase hex. A `%` not followed by two hex digits is
+/// `%25`.
+///
+/// ⚠ **Never the default, and never for a value a request chose.** The point of the rule is
+/// that `/`, `?`, `#` and `:` survive, so the value can add path segments, a query or a
+/// fragment, and pick a different resource under the same prefix. It is safe for a value the
+/// HOST fixed (a page name it bound itself) and wrong for a request argument, which goes
+/// through [`url_segment`]. The output is ASCII, but `&` and `'` pass through, so it is not
+/// safe in an attribute without [`attr`].
+///
+/// ```
+/// use ikigai_fn::html::{url_reserved, url_segment};
+/// assert_eq!(url_reserved("item:default:5"), "item:default:5");
+/// assert_eq!(url_reserved("Hello World!"), "Hello%20World!");
+/// assert_eq!(url_reserved("/foo/bar?x=1#top"), "/foo/bar?x=1#top");
+/// assert_eq!(url_reserved("50%"), "50%25");
+/// assert_eq!(url_reserved("a%2Fb"), "a%2Fb");
+/// assert_eq!(url_reserved("café"), "caf%C3%A9");
+/// // The simple rule encodes all of those:
+/// assert_eq!(url_segment("item:default:5"), "item%3Adefault%3A5");
+/// ```
+pub fn url_reserved(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    push_url_reserved(value, &mut out);
+    out
+}
+
+/// Append [`url_reserved`]`(value)` to `out`.
+pub(crate) fn push_url_reserved(value: &str, out: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        let triplet = byte == b'%'
+            && bytes.get(i + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(i + 2).is_some_and(u8::is_ascii_hexdigit);
+        if triplet {
+            out.push_str(&value[i..i + 3]);
+            i += 3;
+            continue;
+        }
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b':'
+                    | b'/'
+                    | b'?'
+                    | b'#'
+                    | b'['
+                    | b']'
+                    | b'@'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+            )
+        {
+            out.push(char::from(byte));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[usize::from(byte >> 4)]));
+            out.push(char::from(HEX[usize::from(byte & 0xF)]));
+        }
+        i += 1;
     }
 }
 

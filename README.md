@@ -59,7 +59,13 @@ recomputes it.
 - **Template arguments.** Every argument of the request but `src` is a template
   argument, and a marker names one as `{name}`: percent-encoded in an IRI
   (`$h{urn:example:cell:{x}:{y}}`), verbatim as an unquoted value, literal
-  inside a quoted one. `$h{{x}}` splices the value itself.
+  inside a quoted one. `$h{{x}}` splices the value itself. In an IRI,
+  `{+name}` is RFC 6570's reserved expansion: `:`, `/`, `?`, `#` and the other
+  reserved characters pass through, so `$r{urn:example:fragment:{+page}}` with
+  `page=item:default:5` reaches `urn:example:fragment:item:default:5`. Use it
+  only for a value the host fixed, never a request argument, which could then
+  name any resource under the prefix; the template's text before its first
+  argument must hold the scheme, so `$r{{+x}}` is refused.
 - **Per-marker errors.** A failed marker fails the whole compose with its own
   typed error, unless it names fallbacks: `$h{urn:example:title ||
   urn:example:untitled}`. A fallback for an absent resource is cached and cut
@@ -111,6 +117,7 @@ built in Rust, a `compose` template and a port in another language agree:
 | element text | `html_text` (`&<>"'` escaped; a C0 control other than tab, LF, CR becomes U+FFFD) |
 | a quoted attribute, either quote | `attr` (the same output) |
 | one path segment or query value | `url_segment` (RFC 3986 unreserved kept, every other byte `%XX`) |
+| a host-fixed name whose `:` and `/` must survive | `url_reserved` (RFC 6570 `{+var}`: unreserved, reserved and `%XX` kept) |
 | a whole link target from data | `safe_href`, then `attr`: `Some` only for `http://`, `https://` (any case) or a single-`/` path; `None` means render text |
 | htmx `hx-vals` | `json_attr` (a JSON object of strings, escaped for an attribute) |
 
@@ -118,7 +125,11 @@ built in Rust, a `compose` template and a port in another language agree:
 `url_segment`, so there is one implementation. The contract is the shared vectors file
 [`tests/vectors/html_vectors.json`](tests/vectors/html_vectors.json): hand-written inputs
 and outputs that `tests/html_vectors.rs` runs, and that a Python, Deno or XSLT port keeps
-a verbatim copy of and runs the same way.
+a verbatim copy of and runs the same way. The two URI-template forms, `{name}` and
+`{+name}`, have their own file,
+[`tests/vectors/uri_template_vectors.json`](tests/vectors/uri_template_vectors.json): RFC
+6570's examples for those forms plus a few of ours, run by `tests/uri_template_vectors.rs`
+against both functions and against compose.
 
 ## Conformance
 
