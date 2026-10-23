@@ -36,9 +36,11 @@ fn compose_text(text: &str) -> ikigai_core::Result<String> {
 fn every_marker_form() -> String {
     let mut text = String::from("costs $5, or $$ at the end, or a bare $");
     for letter in MARKER_LETTERS {
+        // `$j` names a source and a program; every other letter a request.
+        let program = if *letter == 'j' { " ." } else { "" };
         text.push_str(&format!(
-            "\n${letter}{{urn:example:secret}} ${letter}{{urn:iki:fn:toUpper?in=x}} \
-             $${letter}{{<iri>}} $$${letter}{{urn:example:secret}} ${letter}"
+            "\n${letter}{{urn:example:secret{program}}} ${letter}{{urn:iki:fn:toUpper?in=x{program}}} \
+             $${letter}{{<iri>}} $$${letter}{{urn:example:secret{program}}} ${letter}"
         ));
     }
     // Unterminated last, where no later `}` can close them.

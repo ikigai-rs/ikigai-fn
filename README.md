@@ -15,9 +15,10 @@ an in-browser WebAssembly host alike (no WASI required).
 |-------------|------------------|--------------|
 | `to_upper()` | `urn:iki:fn:toUpper` | upper-cases the `in` argument |
 | `reverse_list()` | `urn:iki:fn:reverseList` | reverses newline-separated items in `in` |
-| `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}` and `$h{…}` markers, see below |
+| `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}`, `$h{…}` and `$j{…}` markers, see below |
 | `compose_over(src)` | none — bind it at a view's name | `compose` with the template fixed; the name's captured variables are its arguments; `.named(…)` gives each view its own endpoint name |
 | `conditional()` | `urn:iki:fn:conditional` | lazy `if`/`then`/`else`; only the taken branch runs; `equals=` branches on a value |
+| `each()` | `urn:iki:fn:each` | fills `template` once per element of the JSON array `src`; optional `empty` and `separator` |
 | `split()` | `urn:demo:split` | splits `in` on commas into a newline list |
 | `wrap()` | `urn:demo:wrap` | surrounds the `text` argument with `[ ]` |
 | `greet()` | `urn:demo:greet` | combines `greeting` and `name` |
@@ -27,7 +28,7 @@ Each `snake_case` constructor builds an endpoint whose `lowerCamelCase`
 identifier matches its name.
 
 Every input declares its datatype (`xsd:string` for text, `xsd:anyURI` for the
-IRI-valued `src`/`if`/`then`/`else`), so type-driven selection — `select_action`,
+IRI-valued `src`/`template`/`empty`/`if`/`then`/`else`), so type-driven selection — `select_action`,
 `urn:kernel:actions types=` — offers these endpoints for the values you hold. A
 test pins that no input in `space()` is left unclassed.
 
@@ -44,6 +45,17 @@ recomputes it.
 | `$a{<iri>}` | as it is — trusted markup | **expanded**: a template including a template |
 | `$r{<iri>}` | as it is — trusted markup | left alone (terminated) |
 | `$h{<iri>}` | as text, HTML-escaped (`'` → `&#39;`) | left alone (terminated) |
+| `$j{<src> <program>}` | a jq selection of `src`, as `$h` does | left alone (terminated) |
+
+- **`$j`, a jq selection.** `$j{urn:example:people .[0].name}` is sugar for
+  `$h{urn:json:query?src=urn:example:people&q=.[0].name&as=text/plain}`: the
+  source runs to the first whitespace and the program is the rest, as written, to
+  the marker's balanced `}` — so `{a: .b}`, `"}"`, `|` and spaces need no quoting.
+  The source may name template arguments; the program never does (`{…}` there is
+  jq's), so no request argument can change it. It always names the full
+  `urn:json:query` (ikigai-json's, which this crate does not depend on), so it works
+  with or without a prefix table, and with nothing bound there it fails as an
+  unresolved `$h` does.
 
 - **Terminate.** Only `$a` expands what it splices, so content from an atom —
   user data, a peer, a file — goes in through `$h` (or `$r`) and a marker in it
@@ -107,6 +119,69 @@ state, recomputed by a write to one cell.
 
 `$a{…}` behaves exactly as it did in 0.2.x, and its tests are unchanged.
 
+## Collections: `each`
+
+`urn:iki:fn:each` renders a collection: it reads the JSON array `src` answers and
+fills `template` once per element, in order.
+
+```html
+<!-- urn:example:ui:row -->
+<tr><td>$h{{index}}</td><td>$h{{name}}</td></tr>
+```
+
+```text
+$r{urn:iki:fn:each?src=urn:example:people&template=urn:example:ui:row&empty=urn:example:ui:no-rows}
+```
+
+- An object element's top-level fields are the template's `{arguments}`; a scalar
+  element is `{value}`; `{index}` is the position, from 0. A `null` is absent, so
+  a fallback covers it (`$h{{title} || {name}}`).
+- A nested value is refused, naming the element: select the flat shape first with
+  jq. The array is read by a typed deserializer that refuses a nested value at its
+  first bracket, so a deeply nested document cannot recurse.
+- **Element data is data.** It reaches the output only through `$h` or `$j`; a
+  template that splices it as it is (`$r{{name}}`, or `$r` over a request that
+  names a field) is refused at every depth, and `{+name}` is refused, so a field
+  is never more than one percent-encoded segment of a name the template fixed.
+  The request's own arguments are not template arguments here, only the
+  element's. `separator` is HTML-escaped.
+- Bounds: 10,000 elements, 256 fields an element, 8 MiB of output.
+- Cacheable exactly when `src`, the templates and every marker are, and
+  golden-threaded from each.
+
+## Short names: a prefix table in a dynamic space
+
+A composition can write `json:query` for `urn:json:query`, `fn:each` for
+`urn:iki:fn:each` and `ui:row` for `urn:example:ui:row`. A prefix is not text
+substitution: it is a real name that exists only inside a dynamic space around the
+composition. The table is DATA, an `ik:Alias` of `ik:RewriteRule`s with
+`ik:resolveAt "root"` (core 0.1.110) over an empty space, served by the host at an
+IRI of its choosing:
+
+```turtle
+<urn:example:prefixes:rule:1> a ik:RewriteRule ;
+    ik:ruleKind "prefix" ; ik:logical "json:" ; ik:canonical "urn:json:" ;
+    ik:resolveAt "root" .
+```
+
+The host builds the space once and injects it where it composes:
+
+```rust,ignore
+let prefixes = Arc::new(ikigai_fn::prefix_space("pages", table_iri));
+spawn(prefixes.clone().drive(&kernel, &cap));          // core's `declare` feature
+kernel.issue_in(request, &cap, Scope::empty().with(prefixes.clone()))
+```
+
+Inside, `$j{page:people .[0].name}` and
+`$r{fn:each?src=page:rows&template=ui:row}` resolve, and so does the `page:people`
+the jq endpoint is asked to read; outside, the names do not exist. A write to the
+table recomputes what was composed with it. `prefix_check` (which `prefix_space`
+runs on every candidate) refuses a table that is anything but rewrite rules, a
+rule that does not resolve from the root, and a prefix under a scheme the host
+names things with (`urn`, `http`, `https`, `file`, `data` and the rest of
+`RESERVED_SCHEMES`). A prefix grants nothing: the rewritten name is issued under the
+caller's own capability. `tests/prefixes.rs` holds the whole example.
+
 ## Escaping and links: `ikigai_fn::html`
 
 One rule for every HTML door that builds markup from data (ledger #1813), so a page
@@ -136,18 +211,18 @@ against both functions and against compose.
 `space()` passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
 (`tests/conformance.rs`): every input classed, every result cacheable and held to
 it, no capability enforced that is not declared. The six text functions are pure
-functions of their arguments (an empty golden-thread set, by design); `compose`
-and `conditional` are exactly as cacheable as the resources they resolve — a shape
+functions of their arguments (an empty golden-thread set, by design); `compose`,
+`conditional` and `each` are exactly as cacheable as the resources they resolve — a shape
 served under a golden thread makes the composite cacheable under that thread and a
 cut recomputes it, a shape served live makes it uncacheable. The test pins both.
 The two `lowerCamelCase` ids (`toUpper`, `reverseList`) are the known exception to
 the kebab-case naming convention: they are live MCP tool names, and move only in
 the coordinated rename wave, so the test records them as the exact `NAMES` set.
 
-One check is waived, and only for the two resolvers: `OUTPUTS` asks an endpoint to
-declare the media type it serves, and neither `compose` nor `conditional` has one
-of its own — each returns the resource it resolved, so the served type is the
-shape's or the taken branch's. `outputs` is a closed list with no pass-through
+One check is waived, and only for the three resolvers: `OUTPUTS` asks an endpoint
+to declare the media type it serves, and none of `compose`, `conditional` and
+`each` has one of its own — each returns the resource it resolved, so the served
+type is the shape's, the taken branch's or the template's. `outputs` is a closed list with no pass-through
 spelling, so the declaration cannot be made true; the waiver is per CHECK
 (`Suite::opt_out_check`), never per endpoint, and what it gives up is asserted by
 hand over three different source types. `compose` declared `text/html` through

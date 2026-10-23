@@ -14,6 +14,9 @@
 //! library at its conventional IRIs with [`space`].
 
 pub mod html;
+pub mod prefix;
+
+pub use prefix::{prefix_check, prefix_space, RESERVED_SCHEMES};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -219,7 +222,7 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// kernel.
 ///
 /// Sources the template named by the `src` argument and replaces every marker in its
-/// (UTF-8 text) representation with the resource the marker names. There are three
+/// (UTF-8 text) representation with the resource the marker names. There are four
 /// markers, one for each way of splicing what comes back:
 ///
 /// | marker | splices | the spliced text's own markers |
@@ -227,6 +230,26 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// | `$a{<iri>}` | as it is — trusted markup | **expanded**: a template including a template |
 /// | `$r{<iri>}` | as it is — trusted markup | left alone (terminated) |
 /// | `$h{<iri>}` | as TEXT, HTML-escaped | left alone (terminated) |
+/// | `$j{<src> <program>}` | a jq selection of `src`, as `$h` does | left alone (terminated) |
+///
+/// **`$j`** is sugar for `$h{urn:json:query?src=<src>&q=<program>&as=text/plain}`
+/// ([`JQ_QUERY`], served by ikigai-json, which this crate does not depend on: the marker only
+/// names it). The source is the body up to its first whitespace, and the program is the rest,
+/// trimmed, as written: it runs to the marker's balanced `}` (braces outside a `"…"` string
+/// nest, and a `}` inside one is text), so any jq program fits unquoted:
+/// `$j{urn:example:people map(select(.age > 30)) | .[0].name}`. The source may name template
+/// arguments (`{name}`, percent-encoded, as in any marker's IRI); the program is template text
+/// only — `{…}` there is jq's object, and no argument reaches it. The program travels as the
+/// request's `q` argument, not in the IRI, so it needs no percent-encoding. `$j` takes no
+/// fallback (`||` belongs to the program), and with nothing bound at [`JQ_QUERY`] it fails as
+/// an unresolved `$h` does.
+///
+/// **Short names.** A marker's IRI need not be a `urn:`: `$h{fn:toUpper?in=x}`,
+/// `$j{page:people .[0].name}` and an [`each`]'s `src` and `template` resolve as whatever the
+/// request's resolution chain makes of them. The ecosystem's way to give a composition short
+/// names is a prefix table declared as data and bound into a dynamic space around it
+/// ([`prefix_space`], and the [`prefix`] module): inside, `json:query` resolves to
+/// `urn:json:query` under the caller's capability; outside, the name does not exist.
 ///
 /// A marker may carry inline arguments (`$a{urn:iki:fn:toUpper?in="resource oriented
 /// computing"}`); a literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
@@ -361,7 +384,8 @@ impl Endpoint for Compose {
             .summary(
                 "Fills the template named by the `src` argument: `$a{<iri>}` splices a \
                  resource and expands its own markers, `$r{<iri>}` splices it as it is, \
-                 and `$h{<iri>}` splices it as HTML-escaped text. `{name}` in a marker is \
+                 `$h{<iri>}` splices it as HTML-escaped text, and `$j{<src> <program>}` \
+                 splices a jq selection of `src` (urn:json:query) as `$h` does. `{name}` in a marker is \
                  a template argument — any other argument of this request — and \
                  `$h{<iri> || <fallback>}` renders the fallback when the first fails. A \
                  literal `$` is written `$$`. The output mirrors the source's media type \
@@ -530,7 +554,7 @@ async fn compose_template(inv: &Invocation<'_>, src: &Iri) -> Result<Representat
     } = shape;
     let text = String::from_utf8(bytes)
         .map_err(|_| Error::Endpoint(format!("compose: `{}` is not UTF-8 text", src.as_str())))?;
-    let expanded = expand(inv, text, 0).await?;
+    let expanded = expand(inv, Args::Request, text, 0).await?;
     Ok(Representation::new(repr_type, expanded.into_bytes()).cacheable())
 }
 
@@ -651,6 +675,395 @@ pub fn conditional() -> Conditional {
     Conditional
 }
 
+// --- each: one template fill per element of a JSON array ---------------------
+
+/// The resource a `$j{<src> <program>}` marker names: ikigai-json's jq selection. The
+/// marker is sugar for `$h{urn:json:query?src=<src>&q=<program>&as=text/plain}`, always
+/// this full name, so it works with or without a prefix table.
+pub const JQ_QUERY: &str = "urn:json:query";
+
+/// The most elements [`each`] fills a template for: 10,000. More is refused, naming the
+/// bound, before any template is filled.
+pub const EACH_MAX_ELEMENTS: usize = 10_000;
+
+/// The most fields one object element may carry: 256.
+pub const EACH_MAX_FIELDS: usize = 256;
+
+/// The most bytes [`each`] answers: 8 MiB. A longer answer is refused, naming the bound.
+pub const EACH_MAX_OUTPUT: usize = 8 << 20;
+
+/// `each`: render a collection — fill the template `template` once per element of the
+/// JSON array `src` answers, and concatenate the fills in order.
+///
+/// - An OBJECT element's top-level fields are the template's `{arguments}`, filled exactly
+///   as [`Compose`] fills request arguments: `$h{{name}}` splices one as escaped text, and
+///   `{name}` in a marker's IRI is percent-encoded as one segment.
+/// - A SCALAR element is `{value}`. A string is its text, a number its shortest decimal
+///   form, a boolean `true` or `false`.
+/// - `{index}` is the element's position, from 0. It is always the position: a field
+///   named `index` does not replace it.
+/// - A `null` field, or a `null` element's `value`, is ABSENT, so a fallback covers it:
+///   `$h{{title} || {name}}`.
+/// - A NESTED value (an object or array inside an element, or an array element) is
+///   refused, naming the element. Select the flat shape first (`$j`, or `urn:json:query`).
+///
+/// Optional: `empty`, a template filled (with no arguments) when the array is empty —
+/// without it an empty array answers nothing — and `separator`, text put between two
+/// fills, HTML-escaped as `$h` escapes.
+///
+/// **Element data is DATA.** It reaches the output only through an escaping marker
+/// (`$h`, `$j`): a template filled per element that splices an argument as it is
+/// (`$r{{name}}`, or `$r{…}` over a request that names one) is refused, at every depth of
+/// `$a`, and so is `{+name}`, so a field never chooses more than one percent-encoded
+/// segment of a name the template fixed. The request's own arguments are not template
+/// arguments here: only the element's are. Nothing in an element is ever scanned for
+/// markers, so a field holding `$a{urn:example:secret}` renders as those characters.
+///
+/// **Authority** is compose's: `src`, the templates and every marker resolve under the
+/// caller's capability.
+///
+/// **Cacheable** exactly when what it read is: it declares itself cacheable, and the
+/// kernel keeps it so only while `src`, the template and every marker's answer are,
+/// golden-threaded from each, so a write to `src` or to the template recomputes it.
+///
+/// **Bounds:** [`EACH_MAX_ELEMENTS`], [`EACH_MAX_FIELDS`], [`EACH_MAX_OUTPUT`]. The array
+/// is read by a typed deserializer that refuses a nested value at its first bracket, so
+/// it never descends below an element's fields: depth is bounded by the shape, with no
+/// pre-scan needed.
+///
+/// The output's media type is the template's.
+///
+/// ```
+/// use std::sync::Arc;
+/// use futures::executor::block_on;
+/// use ikigai_core::{
+///     ArgRef, Capability, Exact, FnEndpoint, Iri, Kernel, ReprType, Representation, Request,
+///     Verb,
+/// };
+///
+/// let fixed = |media: &'static str, body: &'static str| {
+///     FnEndpoint::new("fixed", move |_| {
+///         Ok(Representation::new(ReprType::new(media), body.as_bytes().to_vec()).cacheable())
+///     })
+/// };
+/// let space = ikigai_fn::space()
+///     .bind(
+///         Exact::new("urn:example:people"),
+///         fixed("application/json", r#"[{"name":"Ada"},{"name":"<Grace>"}]"#),
+///     )
+///     .bind(Exact::new("urn:example:row"), fixed("text/html", "<li>$h{{index}}: $h{{name}}</li>"));
+/// let kernel = Kernel::new(Arc::new(space));
+/// let request = Request::new(Verb::Source, Iri::parse("urn:iki:fn:each").unwrap())
+///     .with_arg("src", ArgRef::Inline(b"urn:example:people".to_vec()))
+///     .with_arg("template", ArgRef::Inline(b"urn:example:row".to_vec()));
+/// let list = block_on(kernel.issue(request, &Capability::root())).unwrap();
+/// assert_eq!(list.bytes, b"<li>0: Ada</li><li>1: &lt;Grace&gt;</li>");
+/// ```
+pub struct Each;
+
+#[async_trait]
+impl Endpoint for Each {
+    async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        let src = parse_iri(inv.inline_str("src")?, "src")?;
+        let template = parse_iri(inv.inline_str("template")?, "template")?;
+        let empty = match inv.inline_str("empty") {
+            Ok(iri) => Some(parse_iri(iri, "empty")?),
+            Err(Error::MissingArgument(_)) => None,
+            Err(e) => return Err(e),
+        };
+        let separator = match inv.inline_str("separator") {
+            Ok(text) => html::html_text(text),
+            Err(Error::MissingArgument(_)) => String::new(),
+            Err(e) => return Err(e),
+        };
+        let collection = inv.source(&src).await?;
+        let elements = parse_elements(&collection.bytes, &src)?;
+        let shape = inv.source(&template).await?;
+        if elements.is_empty() {
+            if let Some(empty) = empty {
+                let shape = inv.source(&empty).await?;
+                let text = template_text(shape.bytes, &empty)?;
+                let none = Fields::new();
+                let filled = expand(inv, Args::Element(&none), text, 0).await?;
+                return Ok(Representation::new(shape.repr_type, filled.into_bytes()).cacheable());
+            }
+            return Ok(Representation::new(shape.repr_type, Vec::new()).cacheable());
+        }
+        let text = template_text(shape.bytes, &template)?;
+        let fills = try_join_all(
+            elements
+                .iter()
+                .map(|fields| expand(inv, Args::Element(fields), text.clone(), 0)),
+        )
+        .await?;
+        let mut out = String::new();
+        for (i, fill) in fills.iter().enumerate() {
+            if i > 0 {
+                out.push_str(&separator);
+            }
+            out.push_str(fill);
+            if out.len() > EACH_MAX_OUTPUT {
+                return Err(Error::Endpoint(format!(
+                    "each: the answer passed {EACH_MAX_OUTPUT} bytes (EACH_MAX_OUTPUT) at \
+                     element {i} of {}",
+                    fills.len()
+                )));
+            }
+        }
+        Ok(Representation::new(shape.repr_type, out.into_bytes()).cacheable())
+    }
+
+    fn name(&self) -> &str {
+        "each"
+    }
+
+    fn describe(&self) -> Description {
+        Description::new("each")
+            .title("Each")
+            .summary(
+                "Fills the template `template` once per element of the JSON array `src` \
+                 answers, in order: an object's top-level fields are its `{arguments}`, a \
+                 scalar is `{value}`, and `{index}` is the position. Element data reaches \
+                 the output only escaped (`$h`, `$j`); a nested value is refused. Optional \
+                 `empty` (a template for an empty array) and `separator` (escaped text \
+                 between fills). The output is the template's media type, cacheable while \
+                 everything it read is.",
+            )
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+            .input(
+                ArgSpec::new("src")
+                    .summary("the IRI of a resource whose answer is a JSON array")
+                    .class(XSD_ANY_URI),
+            )
+            .input(
+                ArgSpec::new("template")
+                    .summary("the IRI of the template filled once per element")
+                    .class(XSD_ANY_URI),
+            )
+            .input(
+                ArgSpec::new("empty")
+                    .summary("the IRI of a template filled when the array is empty (optional)")
+                    .class(XSD_ANY_URI)
+                    .optional(),
+            )
+            .input(
+                ArgSpec::new("separator")
+                    .summary("text put between two fills, HTML-escaped (optional)")
+                    .class(XSD_STRING)
+                    .optional(),
+            )
+        // No `.output(…)`, for compose's reason: the served type is the template's.
+    }
+}
+
+/// `each`: one template fill per element of a JSON array. See [`Each`].
+pub fn each() -> Each {
+    Each
+}
+
+/// A template's bytes as UTF-8 text.
+fn template_text(bytes: Vec<u8>, iri: &Iri) -> Result<String> {
+    String::from_utf8(bytes)
+        .map_err(|_| Error::Endpoint(format!("each: `{}` is not UTF-8 text", iri.as_str())))
+}
+
+/// The elements of the JSON array `bytes`, each as its template arguments.
+fn parse_elements(bytes: &[u8], src: &Iri) -> Result<Vec<Fields>> {
+    use serde::de::DeserializeSeed;
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let elements = ElementsSeed
+        .deserialize(&mut de)
+        .and_then(|elements| de.end().map(|()| elements))
+        .map_err(|e| {
+            Error::Endpoint(format!(
+                "each: `{}` is not a JSON array of flat objects or scalars: {e}",
+                src.as_str()
+            ))
+        })?;
+    Ok(elements)
+}
+
+/// The array: at most [`EACH_MAX_ELEMENTS`] elements, each an object or a scalar.
+struct ElementsSeed;
+
+impl<'de> serde::de::DeserializeSeed<'de> for ElementsSeed {
+    type Value = Vec<Fields>;
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        de.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for ElementsSeed {
+    type Value = Vec<Fields>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON array")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        mut seq: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        let mut elements = Vec::new();
+        while let Some(mut fields) = seq.next_element_seed(ElementSeed(elements.len()))? {
+            if elements.len() == EACH_MAX_ELEMENTS {
+                return Err(serde::de::Error::custom(format!(
+                    "more than {EACH_MAX_ELEMENTS} elements (EACH_MAX_ELEMENTS)"
+                )));
+            }
+            fields.insert("index".to_string(), elements.len().to_string());
+            elements.push(fields);
+        }
+        Ok(elements)
+    }
+}
+
+/// One element, at its position: an object's fields, or a scalar as `value`.
+struct ElementSeed(usize);
+
+impl<'de> serde::de::DeserializeSeed<'de> for ElementSeed {
+    type Value = Fields;
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        de.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for ElementSeed {
+    type Value = Fields;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "element {}: an object of scalars, or a scalar", self.0)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        let mut fields = Fields::new();
+        let mut count = 0usize;
+        while let Some(key) = map.next_key::<String>()? {
+            count += 1;
+            if count > EACH_MAX_FIELDS {
+                return Err(serde::de::Error::custom(format!(
+                    "element {}: more than {EACH_MAX_FIELDS} fields (EACH_MAX_FIELDS)",
+                    self.0
+                )));
+            }
+            match map.next_value_seed(ScalarSeed { element: self.0 })? {
+                Some(value) => {
+                    fields.insert(key, value);
+                }
+                None => {
+                    fields.remove(&key);
+                }
+            }
+        }
+        Ok(fields)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        _: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        Err(nested(self.0))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(Some(v.to_string())))
+    }
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(Some(v.to_string())))
+    }
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(Some(v.to_string())))
+    }
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(Some(v.to_string())))
+    }
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(Some(v.to_string())))
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Ok(scalar(None))
+    }
+}
+
+/// A scalar element's fields: `value`, when it is not `null`.
+fn scalar(value: Option<String>) -> Fields {
+    value
+        .map(|v| Fields::from([("value".to_string(), v)]))
+        .unwrap_or_default()
+}
+
+/// The refusal of a nested value, at its first bracket.
+fn nested<E: serde::de::Error>(element: usize) -> E {
+    E::custom(format!(
+        "element {element}: a nested object or array — `each` fills a template from flat \
+         elements; select the flat shape first (`$j`, or `urn:json:query`)"
+    ))
+}
+
+/// One field's value: its text, or `None` for `null`; a nested value is refused.
+struct ScalarSeed {
+    element: usize,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for ScalarSeed {
+    type Value = Option<String>;
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        de: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        de.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for ScalarSeed {
+    type Value = Option<String>;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "element {}: a scalar field value", self.element)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        _: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        Err(nested(self.element))
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        self,
+        _: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        Err(nested(self.element))
+    }
+    fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
+        Ok(Some(v.to_string()))
+    }
+    fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<Self::Value, E> {
+        Ok(Some(v.to_string()))
+    }
+    fn visit_i64<E: serde::de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+        Ok(Some(v.to_string()))
+    }
+    fn visit_u64<E: serde::de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+        Ok(Some(v.to_string()))
+    }
+    fn visit_f64<E: serde::de::Error>(self, v: f64) -> std::result::Result<Self::Value, E> {
+        Ok(Some(v.to_string()))
+    }
+    fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+        Ok(None)
+    }
+}
+
 /// Parse an argument that must be an IRI, reporting which argument if it isn't.
 fn parse_iri(s: &str, arg: &str) -> Result<Iri> {
     Iri::parse(s).map_err(|e| Error::InvalidArgument {
@@ -688,6 +1101,9 @@ enum Mode {
     Raw,
     /// `$h{…}`: as text, HTML-escaped, terminated.
     Html,
+    /// `$j{<src> <program>}`: a jq selection of `src` ([`JQ_QUERY`]), spliced as `$h`
+    /// splices: as text, HTML-escaped, terminated.
+    Jq,
 }
 
 impl Mode {
@@ -695,7 +1111,7 @@ impl Mode {
     /// reads letters through it and [`MARKER_LETTERS`] is built from it, so a mode left
     /// out is a marker nothing recognizes (and its own tests fail), never a marker the
     /// parser reads and the escape misses.
-    const ALL: [Mode; 3] = [Mode::Transclude, Mode::Raw, Mode::Html];
+    const ALL: [Mode; 4] = [Mode::Transclude, Mode::Raw, Mode::Html, Mode::Jq];
 
     /// The letter that spells this mode after `$`.
     const fn letter(self) -> u8 {
@@ -703,7 +1119,14 @@ impl Mode {
             Mode::Transclude => b'a',
             Mode::Raw => b'r',
             Mode::Html => b'h',
+            Mode::Jq => b'j',
         }
+    }
+
+    /// Whether what this mode splices is escaped as text — the only way element data
+    /// ([`each`]) may reach the output.
+    fn escapes(self) -> bool {
+        matches!(self, Mode::Html | Mode::Jq)
     }
 
     /// The mode a marker letter spells, if it spells one.
@@ -723,8 +1146,8 @@ const LETTERS: [char; Mode::ALL.len()] = {
     letters
 };
 
-/// The letters that open a [`compose`] marker — `$a{…}`, `$r{…}`, `$h{…}` — in the order
-/// compose learned them (`a` in 0.2, `r` and `h` in 0.3).
+/// The letters that open a [`compose`] marker — `$a{…}`, `$r{…}`, `$h{…}`, `$j{…}` — in
+/// the order compose learned them (`a` in 0.2, `r` and `h` in 0.3, `j` in 0.6).
 ///
 /// Built from the list compose's own scanner reads, so it cannot drift from it. A host
 /// that escapes text for a template should call [`escape_markers`] rather than keep a copy
@@ -733,7 +1156,7 @@ const LETTERS: [char; Mode::ALL.len()] = {
 /// letter is not a change to its type.
 ///
 /// ```
-/// assert_eq!(ikigai_fn::MARKER_LETTERS, &['a', 'r', 'h']);
+/// assert_eq!(ikigai_fn::MARKER_LETTERS, &['a', 'r', 'h', 'j']);
 /// ```
 pub const MARKER_LETTERS: &[char] = &LETTERS;
 
@@ -804,7 +1227,26 @@ enum Alt {
         iri: String,
         args: Vec<(String, Value)>,
     },
+    /// `$j{<src> <program>}`: a SOURCE of [`JQ_QUERY`] with `src` (whose text may name
+    /// template arguments, as an IRI does) and `q`, the program, which is template text
+    /// only: it names no argument and nothing fills it.
+    Jq { src: String, program: String },
 }
+
+/// Where a marker's `{name}` arguments come from.
+#[derive(Clone, Copy)]
+enum Args<'e> {
+    /// The request's: a variable the name captured, else an inline argument
+    /// ([`compose`], [`compose_over`]).
+    Request,
+    /// One element of an [`each`] collection, and nothing else. Element data is DATA: it
+    /// reaches the output only through an escaping marker (`$h`, `$j`), and is never
+    /// reserved-expanded (`{+name}`) into an IRI.
+    Element(&'e Fields),
+}
+
+/// One element's template arguments: its top-level fields (or `value`), and `index`.
+type Fields = std::collections::BTreeMap<String, String>;
 
 /// A marker argument's value: quoted (`"…"`, literal) or not (may name arguments).
 struct Value {
@@ -817,6 +1259,20 @@ struct Marker {
     mode: Mode,
     body: String,
     alts: Vec<Alt>,
+}
+
+impl Marker {
+    /// Whether any alternative reads a template argument: is one, or names one in its
+    /// IRI or an unquoted value.
+    fn reads_arguments(&self) -> bool {
+        self.alts.iter().any(|alt| match alt {
+            Alt::Arg(_) => true,
+            Alt::Request { iri, args } => {
+                iri.contains('{') || args.iter().any(|(_, v)| !v.literal && v.text.contains('{'))
+            }
+            Alt::Jq { src, .. } => src.contains('{'),
+        })
+    }
 }
 
 /// Split `text` into ordered literal/marker segments. `$$` collapses to a literal
@@ -869,6 +1325,7 @@ fn scan(text: &str) -> Vec<Segment> {
 /// first alternative failed, in turn. Boxed for the async recursion.
 fn expand<'a>(
     inv: &'a Invocation<'_>,
+    args: Args<'a>,
     text: String,
     depth: usize,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
@@ -888,6 +1345,20 @@ fn expand<'a>(
                 Segment::Lit(_) => None,
             })
             .collect::<Result<Vec<Marker>>>()?;
+        if let Args::Element(_) = args {
+            // Element data reaches the output only escaped: a marker that reads an
+            // argument and splices as it is (`$r`) is refused, at every depth.
+            if let Some(marker) = markers
+                .iter()
+                .find(|marker| !marker.mode.escapes() && marker.reads_arguments())
+            {
+                return Err(Error::Endpoint(format!(
+                    "each: marker `{}` reads element data and splices it as it is — element \
+                     fields reach the output only through `$h` (or `$j`)",
+                    marker.body
+                )));
+            }
+        }
         // Fork: every first alternative that is a request resolves concurrently. An
         // argument is answered here, and a request that cannot be built (a missing
         // argument, a bad IRI) is that marker's failure — its fallback's to cover.
@@ -895,8 +1366,8 @@ fn expand<'a>(
         let firsts: Vec<Option<Result<String>>> = markers
             .iter()
             .map(|marker| match &marker.alts[0] {
-                Alt::Arg(name) => Some(template_arg(inv, name)),
-                Alt::Request { iri, args } => match build_request(inv, &marker.body, iri, args) {
+                Alt::Arg(name) => Some(template_arg(inv, args, name)),
+                alt => match alt_request(inv, args, &marker.body, alt) {
                     Ok(request) => {
                         requests.push(request);
                         None
@@ -920,7 +1391,7 @@ fn expand<'a>(
                 let mut result = match first {
                     First::Local(value) => value.map(|value| splice_value(marker.mode, value)),
                     First::Resolved(Ok(repr)) => {
-                        splice(inv, marker.mode, &marker.body, repr, depth).await
+                        splice(inv, args, marker.mode, &marker.body, repr, depth).await
                     }
                     First::Resolved(Err(e)) => Err(e),
                 };
@@ -928,7 +1399,7 @@ fn expand<'a>(
                     if result.is_ok() {
                         break;
                     }
-                    result = evaluate(inv, marker, alt, depth).await;
+                    result = evaluate(inv, args, marker, alt, depth).await;
                 }
                 result
             });
@@ -959,16 +1430,17 @@ enum First {
 /// Resolve and splice one (fallback) alternative of `marker`.
 async fn evaluate(
     inv: &Invocation<'_>,
+    args: Args<'_>,
     marker: &Marker,
     alt: &Alt,
     depth: usize,
 ) -> Result<String> {
     match alt {
-        Alt::Arg(name) => Ok(splice_value(marker.mode, template_arg(inv, name)?)),
-        Alt::Request { iri, args } => {
-            let request = build_request(inv, &marker.body, iri, args)?;
+        Alt::Arg(name) => Ok(splice_value(marker.mode, template_arg(inv, args, name)?)),
+        alt => {
+            let request = alt_request(inv, args, &marker.body, alt)?;
             let repr = inv.issue(request).await?;
-            splice(inv, marker.mode, &marker.body, repr, depth).await
+            splice(inv, args, marker.mode, &marker.body, repr, depth).await
         }
     }
 }
@@ -976,20 +1448,22 @@ async fn evaluate(
 /// What a marker splices for the resource it resolved.
 async fn splice(
     inv: &Invocation<'_>,
+    args: Args<'_>,
     mode: Mode,
     body: &str,
     repr: Representation,
     depth: usize,
 ) -> Result<String> {
     match (mode, String::from_utf8(repr.bytes)) {
-        (Mode::Transclude, Ok(text)) => expand(inv, text, depth + 1).await,
+        (Mode::Transclude, Ok(text)) => expand(inv, args, text, depth + 1).await,
         (Mode::Raw, Ok(text)) => Ok(text),
-        (Mode::Html, Ok(text)) => Ok(html::html_text(&text)),
+        (Mode::Html | Mode::Jq, Ok(text)) => Ok(html::html_text(&text)),
         // A value spliced into HTML must be text: a placeholder here would be escaped
         // into visible garbage, or land inside an attribute.
-        (Mode::Html, Err(e)) => Err(Error::Endpoint(format!(
-            "compose: `{body}` is non-text ({} bytes), and `$h` splices text",
-            e.into_bytes().len()
+        (Mode::Html | Mode::Jq, Err(e)) => Err(Error::Endpoint(format!(
+            "compose: `{body}` is non-text ({} bytes), and `${}` splices text",
+            e.into_bytes().len(),
+            mode.letter() as char
         ))),
         (_, Err(e)) => Ok(format!(
             "<!-- compose: `{body}` is non-text ({} bytes), not inlined -->",
@@ -1002,14 +1476,21 @@ async fn splice(
 /// when the marker is parsed, so a value is never expanded.)
 fn splice_value(mode: Mode, value: String) -> String {
     match mode {
-        Mode::Html => html::html_text(&value),
+        Mode::Html | Mode::Jq => html::html_text(&value),
         Mode::Raw | Mode::Transclude => value,
     }
 }
 
 /// The value of the template argument `name`: the variable the name captured, else the
-/// request's inline argument; [`Error::MissingArgument`] if neither is there.
-fn template_arg(inv: &Invocation<'_>, name: &str) -> Result<String> {
+/// request's inline argument — or, for an [`each`] element, the element's field;
+/// [`Error::MissingArgument`] if it is not there.
+fn template_arg(inv: &Invocation<'_>, args: Args<'_>, name: &str) -> Result<String> {
+    if let Args::Element(fields) = args {
+        return fields
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::MissingArgument(name.to_string()));
+    }
     if let Some(value) = inv.bindings.get(name) {
         return Ok(value.to_string());
     }
@@ -1080,6 +1561,30 @@ fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Vec<&'s str> {
 /// refused.
 fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
     let refuse = |detail: String| Error::Endpoint(format!("compose: marker `{body}`: {detail}"));
+    if mode == Mode::Jq {
+        // `<src> <program>`: the source runs to the first whitespace, and the program is
+        // everything after it, as written. No `||` split and no `{name}` in the program:
+        // jq's own `{…}` is an object, and a program is template text only.
+        let (src, program) = body
+            .split_once(char::is_whitespace)
+            .map(|(src, program)| (src, program.trim()))
+            .unwrap_or((body, ""));
+        if program.is_empty() {
+            return Err(refuse(
+                "`$j{<src> <program>}` needs a source IRI, whitespace, and a jq program"
+                    .to_string(),
+            ));
+        }
+        check_placeholders(src, true).map_err(refuse)?;
+        return Ok(Marker {
+            mode,
+            body: body.to_string(),
+            alts: vec![Alt::Jq {
+                src: src.to_string(),
+                program: program.to_string(),
+            }],
+        });
+    }
     let mut alts = Vec::new();
     for alt in split_outside_quotes(body, "||") {
         let alt = alt.trim();
@@ -1147,33 +1652,53 @@ fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
     })
 }
 
-/// Build the SOURCE request an alternative names, its arguments filled in.
-fn build_request(
-    inv: &Invocation<'_>,
-    body: &str,
-    iri: &str,
-    args: &[(String, Value)],
-) -> Result<Request> {
-    let filled = fill_arguments(inv, iri, true)?;
-    let iri = Iri::parse(&filled)
-        .map_err(|e| Error::Endpoint(format!("compose: bad IRI in marker `{body}`: {e}")))?;
-    let mut request = Request::new(Verb::Source, iri);
-    for (key, value) in args {
-        let text = if value.literal {
-            value.text.clone()
-        } else {
-            fill_arguments(inv, &value.text, false)?
-        };
-        request = request.with_arg(key.clone(), ArgRef::Inline(text.into_bytes()));
+/// Build the SOURCE request an alternative names, its arguments filled in. (An argument
+/// alternative names no request; it is answered before this is reached.)
+fn alt_request(inv: &Invocation<'_>, from: Args<'_>, body: &str, alt: &Alt) -> Result<Request> {
+    let bad_iri = |e: ikigai_core::IriError| {
+        Error::Endpoint(format!("compose: bad IRI in marker `{body}`: {e}"))
+    };
+    match alt {
+        Alt::Arg(name) => unreachable!("argument `{name}` is answered without a request"),
+        Alt::Request { iri, args } => {
+            let filled = fill_arguments(inv, from, iri, true)?;
+            let mut request = Request::new(Verb::Source, Iri::parse(&filled).map_err(bad_iri)?);
+            for (key, value) in args {
+                let text = if value.literal {
+                    value.text.clone()
+                } else {
+                    fill_arguments(inv, from, &value.text, false)?
+                };
+                request = request.with_arg(key.clone(), ArgRef::Inline(text.into_bytes()));
+            }
+            Ok(request)
+        }
+        Alt::Jq { src, program } => {
+            // The source is named like any marker's IRI (its arguments percent-encoded),
+            // and checked as one here, so a bad one is this marker's error rather than
+            // the jq endpoint's. The program goes in as it was written.
+            let src = fill_arguments(inv, from, src, true)?;
+            Iri::parse(&src).map_err(bad_iri)?;
+            Ok(
+                Request::new(Verb::Source, Iri::parse(JQ_QUERY).expect("a valid IRI"))
+                    .with_arg("src", ArgRef::Inline(src.into_bytes()))
+                    .with_arg("q", ArgRef::Inline(program.clone().into_bytes()))
+                    .with_arg("as", ArgRef::Inline(b"text/plain".to_vec())),
+            )
+        }
     }
-    Ok(request)
 }
 
 /// Every `{name}` in `template` replaced by that argument's value — percent-encoded
 /// when `encode` (in an IRI), verbatim otherwise (as one argument value) — and, in an IRI,
 /// every `{+name}` by its value under RFC 6570's reserved expansion. The placeholders were
 /// checked when the marker was parsed.
-fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<String> {
+fn fill_arguments(
+    inv: &Invocation<'_>,
+    args: Args<'_>,
+    template: &str,
+    encode: bool,
+) -> Result<String> {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(open) = rest.find('{') {
@@ -1186,10 +1711,17 @@ fn fill_arguments(inv: &Invocation<'_>, template: &str, encode: bool) -> Result<
         match inner.strip_prefix('+') {
             Some(name) => {
                 debug_assert!(encode, "`{{+name}}` is refused outside an IRI when parsed");
-                html::push_url_reserved(&template_arg(inv, name)?, &mut out);
+                if let Args::Element(_) = args {
+                    return Err(Error::Endpoint(format!(
+                        "each: `{{+{name}}}` would let element data choose a path, a query or \
+                         a name under the prefix — element fields are reserved-expanded never; \
+                         write `{{{name}}}`"
+                    )));
+                }
+                html::push_url_reserved(&template_arg(inv, args, name)?, &mut out);
             }
-            None if encode => html::push_url_segment(&template_arg(inv, inner)?, &mut out),
-            None => out.push_str(&template_arg(inv, inner)?),
+            None if encode => html::push_url_segment(&template_arg(inv, args, inner)?, &mut out),
+            None => out.push_str(&template_arg(inv, args, inner)?),
         }
         rest = &after[close + 1..];
     }
@@ -1313,6 +1845,7 @@ pub fn space() -> EndpointSpace {
         .bind(Exact::new("urn:iki:fn:reverseList"), reverse_list())
         .bind(Exact::new("urn:iki:fn:compose"), compose())
         .bind(Exact::new("urn:iki:fn:conditional"), conditional())
+        .bind(Exact::new("urn:iki:fn:each"), each())
         .bind(Exact::new("urn:demo:wrap"), wrap())
         .bind(Exact::new("urn:demo:split"), split())
         .bind(Exact::new("urn:demo:greet"), greet())
