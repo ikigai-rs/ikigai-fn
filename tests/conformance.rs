@@ -102,15 +102,16 @@ use std::sync::{Arc, RwLock};
 /// description id.
 const PURE: [&str; 6] = ["toUpper", "reverseList", "split", "wrap", "greet", "echo"];
 
-/// The two that resolve other resources — as cacheable as what they resolve, and
+/// The three that resolve other resources — as cacheable as what they resolve, and
 /// serving the media type of what they resolve (see [`PASS_THROUGH_REASON`]).
-const RESOLVERS: [&str; 2] = ["compose", "conditional"];
+const RESOLVERS: [&str; 3] = ["compose", "conditional", "each"];
 
 /// Why `OUTPUTS` is waived for both resolvers, printed in the report beside the
 /// findings so the waived rule and its reason travel together.
 const PASS_THROUGH_REASON: &str =
     "pass-through: the served type is the resolved resource's, not this endpoint's — \
-     compose returns the shape's repr_type and conditional the taken branch's, so any \
+     compose returns the shape's repr_type, each the template's and conditional the \
+     taken branch's, so any \
      fixed `.output(…)` is a lie that happens to pass over today's fixture. `outputs` \
      is a closed list with no pass-through spelling (ikigai-core PENDING §20 — the \
      condition for removing this waiver); pinned by hand in \
@@ -124,6 +125,8 @@ const SHAPE_IRI: &str = "urn:conformance:shape";
 const FLAG_IRI: &str = "urn:conformance:flag";
 const THEN_IRI: &str = "urn:conformance:then";
 const ELSE_IRI: &str = "urn:conformance:else";
+const COLLECTION_IRI: &str = "urn:conformance:collection";
+const ROW_IRI: &str = "urn:conformance:row";
 
 /// The golden thread each threaded resource names: its STATE (the stored body),
 /// not its own IRI. The kernel already hangs every cacheable read on the name it
@@ -134,6 +137,8 @@ const SHAPE_STORE: &str = "urn:conformance:store:shape";
 const FLAG_STORE: &str = "urn:conformance:store:flag";
 const THEN_STORE: &str = "urn:conformance:store:then";
 const ELSE_STORE: &str = "urn:conformance:store:else";
+const COLLECTION_STORE: &str = "urn:conformance:store:collection";
+const ROW_STORE: &str = "urn:conformance:store:row";
 
 const SHAPE: &str = "<p>$a{urn:iki:fn:toUpper?in=hi}</p>";
 const SHAPE_EDITED: &str = "<p>$a{urn:iki:fn:toUpper?in=bye}</p>";
@@ -224,6 +229,24 @@ fn fixtures(threaded: bool) -> Fixtures {
                 Arc::new(RwLock::new("branch-else")),
                 thread(ELSE_STORE),
             ),
+        )
+        .bind(
+            Exact::new(COLLECTION_IRI),
+            resource(
+                COLLECTION_IRI,
+                "application/json",
+                Arc::new(RwLock::new(r#"[{"x":"a"},{"x":"b"}]"#)),
+                thread(COLLECTION_STORE),
+            ),
+        )
+        .bind(
+            Exact::new(ROW_IRI),
+            resource(
+                ROW_IRI,
+                "text/html",
+                Arc::new(RwLock::new("<li>$h{{x}}</li>")),
+                thread(ROW_STORE),
+            ),
         );
     Fixtures {
         kernel: Kernel::new(Arc::new(space)),
@@ -266,10 +289,17 @@ fn text(kernel: &Kernel, request: Request) -> String {
 #[test]
 fn conforms() {
     let Fixtures { kernel, .. } = fixtures(true);
-    let fixture_ids: Vec<String> = [SHAPE_IRI, FLAG_IRI, THEN_IRI, ELSE_IRI]
-        .into_iter()
-        .map(fixture_id)
-        .collect();
+    let fixture_ids: Vec<String> = [
+        SHAPE_IRI,
+        FLAG_IRI,
+        THEN_IRI,
+        ELSE_IRI,
+        COLLECTION_IRI,
+        ROW_IRI,
+    ]
+    .into_iter()
+    .map(fixture_id)
+    .collect();
     let suite = PURE
         .iter()
         .fold(Suite::new(), |suite, id| suite.pure(*id).cacheable(*id));
@@ -288,6 +318,11 @@ fn conforms() {
                 .arg("if", FLAG_IRI)
                 .arg("then", THEN_IRI)
                 .arg("else", ELSE_IRI),
+        )
+        .fixture(
+            Fixture::new("each", Verb::Source)
+                .arg("src", COLLECTION_IRI)
+                .arg("template", ROW_IRI),
         );
     // `space()` is configuration-free, so it names itself; the fixtures' kernel
     // above extends it with `.bind`, which drops the name (core 0.1.89), so the
