@@ -169,12 +169,13 @@ fn json_attr_decodes_to_the_same_object() {
         .replace("&amp;", "&");
     let object: serde_json::Map<String, Value> =
         serde_json::from_str(&decoded).expect("the decoded attribute is a JSON object");
-    // serde_json's map sorts its keys, so compare sorted; the ORDER is pinned by the
-    // vectors, which compare the emitted text.
-    let members: Vec<(&str, &str)> = object
+    // Compare members independently of serde_json's preserve_order feature, which
+    // the engine enables. The vectors separately pin the emitted text's order.
+    let mut members: Vec<(&str, &str)> = object
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str().expect("a string value")))
         .collect();
+    members.sort();
     let mut want = pairs.to_vec();
     want.sort();
     assert_eq!(members, want);

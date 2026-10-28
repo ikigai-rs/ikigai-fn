@@ -398,6 +398,7 @@ impl Endpoint for Compose {
                     .summary("the IRI of the template to fill")
                     .class(XSD_ANY_URI),
             )
+            .open_arguments("each fills a {name} marker in the body")
         // No `.output(…)`. `invoke` returns the SHAPE's `repr_type` unchanged, so the
         // served type is the source's and not compose's to declare: over an HTML shape
         // it serves HTML, over a Turtle one Turtle. It declared `text/html` through
@@ -408,10 +409,7 @@ impl Endpoint for Compose {
         // nothing is the only honest option, and `tests/conformance.rs` waives
         // `Check::Outputs` here and pins the pass-through by hand.
         //
-        // Nor does it declare the template arguments: they are an OPEN set, whatever the
-        // template names, and `ArgSpec` has no spelling for "any other argument". So a
-        // pre-flight (`urn:kernel:validate`) reports each one as unknown, though the
-        // endpoint uses it. Reported to the hub rather than worked around.
+        // Template arguments form an open set: the template determines their names.
     }
 }
 
