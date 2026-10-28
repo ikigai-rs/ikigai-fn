@@ -27,6 +27,8 @@ serde_json = "1.0"
 
 [dev-dependencies]
 futures = "0.3"
+# Exercise REPL argument routing against this module's real Meta contract.
+ikigai-engine = "0.2.2"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
 # endpoint and reports every violation at once. 0.11.0 enables DATATYPES
 # and FAILURES by default, alongside the existing checks and per-check waivers.
