@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (ledger #2498)
 
 - Declare compose's Source arguments as open, so REPL requests such as
   `source urn:iki:fn:compose src=urn:file:param.txt min=6` pass `min` to the
