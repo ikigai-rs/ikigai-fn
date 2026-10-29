@@ -14,6 +14,9 @@
 //! | a whole link target from data: `href="{}"` | [`safe_href`], then [`attr`] |
 //! | htmx's `hx-vals='{}'` | [`json_attr`] |
 //!
+//! And one function goes the other way: [`to_text`] reads HTML that arrived as text (an
+//! RSS description) and answers the words it shows, for a search or a summary.
+//!
 //! Nothing here makes an UNQUOTED attribute, an event-handler attribute (`onclick=`), or
 //! the inside of `<script>` or `<style>` safe: those are code, and no escape turns data into
 //! safe code. `compose`'s `$h{…}` marker escapes with [`html_text`], so a template and a
@@ -294,4 +297,197 @@ fn push_json_string(s: &str, out: &mut String) {
         }
     }
     out.push('"');
+}
+
+/// The words `html` shows a reader, as plain text: markup removed, character references
+/// decoded, whitespace collapsed. The text face of HTML that arrived as TEXT (an RSS
+/// `description` or `content:encoded`, escaped or in CDATA), which XSLT 1.0 cannot read
+/// as markup, so a search over it matches words and not `strong`, `img` or `href`.
+///
+/// The input is tokenized by html5ever, Servo's implementation of the WHATWG tokenizer,
+/// so a reference, a broken tag or a stray `<` reads as a browser reads it; this function
+/// only decides what to keep:
+///
+/// - **Text** is kept, its references decoded once: `&amp;lt;` is text that says `&lt;`.
+/// - **Tags, attributes, comments and doctypes** are dropped. So is every attribute's
+///   value, `alt` and `title` included: the face is the text a page shows, not the text
+///   it hides.
+/// - **Code and inert content** are dropped with their bodies: `<script>`, `<style>`,
+///   `<template>`, and the fallback in `<iframe>`, `<noembed>` and `<noframes>`. The
+///   tokenizer reads those bodies as a browser does (a `</p>` inside a script does not
+///   end it). `<title>` and `<textarea>` keep their text, as text: `<title>a <b></title>`
+///   is `a <b>`.
+/// - **Whitespace**: a block element's start or end tag (`<p>`, `<li>`, `<td>`, `<h1>`, …)
+///   and `<br>` separate words, an inline one (`<b>`, `<a>`, `<em>`) does not, so
+///   `un<em>bel</em>ievable` is one word. Every run of HTML whitespace (space, tab, line
+///   feed, form feed, carriage return) becomes one space, and the ends are trimmed: the
+///   face is one line. A no-break space (`&nbsp;`) is not whitespace, and stays.
+///
+/// The answer is TEXT, not HTML: `&lt;script&gt;` in the input is `<script>` in the
+/// answer. Put it in a page through [`html_text`] like any other text, never raw.
+///
+/// ```
+/// use ikigai_fn::html::{html_text, to_text};
+/// assert_eq!(
+///     to_text(r#"<p>Read <strong>this</strong>.</p><p><img src="cat.jpg" alt="cat"><a href="/more">More</a></p>"#),
+///     "Read this. More"
+/// );
+/// assert_eq!(to_text("Tom &amp; Jerry&#39;s"), "Tom & Jerry's");
+/// assert_eq!(to_text("a<script>x = '</p>';</script>b"), "ab");
+/// assert_eq!(html_text(&to_text("&lt;b&gt;")), "&lt;b&gt;");
+/// ```
+pub fn to_text(html: &str) -> String {
+    use html5ever::tendril::StrTendril;
+    use html5ever::tokenizer::{BufferQueue, Tokenizer};
+
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+    let tokenizer = Tokenizer::new(TextSink::default(), Default::default());
+    // The sink never answers `Script`, so the tokenizer never pauses: one feed reads it all.
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    tokenizer.sink.text.into_inner()
+}
+
+/// The [`to_text`] sink: the text so far, and whether the tokens arriving are skipped.
+#[derive(Default)]
+struct TextSink {
+    text: std::cell::RefCell<String>,
+    /// A space is owed before the next character, if any text precedes it.
+    space: std::cell::Cell<bool>,
+    /// Inside a skipped raw-text element (`script`, `style`, …): its end tag is the only
+    /// tag the tokenizer emits until then.
+    raw_skip: std::cell::Cell<bool>,
+    /// How many `<template>` elements are open; their contents are markup, and nest.
+    templates: std::cell::Cell<usize>,
+}
+
+impl TextSink {
+    fn push(&self, chars: &str) {
+        let mut text = self.text.borrow_mut();
+        for c in chars.chars() {
+            if matches!(c, ' ' | '\t' | '\n' | '\u{C}' | '\r') {
+                self.space.set(true);
+            } else {
+                if self.space.replace(false) && !text.is_empty() {
+                    text.push(' ');
+                }
+                text.push(c);
+            }
+        }
+    }
+}
+
+impl html5ever::tokenizer::TokenSink for TextSink {
+    type Handle = ();
+
+    fn process_token(
+        &self,
+        token: html5ever::tokenizer::Token,
+        _line: u64,
+    ) -> html5ever::tokenizer::TokenSinkResult<()> {
+        use html5ever::tokenizer::states::RawKind;
+        use html5ever::tokenizer::{TagKind, Token, TokenSinkResult};
+
+        match token {
+            Token::CharacterTokens(chars) => {
+                if !self.raw_skip.get() && self.templates.get() == 0 {
+                    self.push(&chars);
+                }
+            }
+            Token::TagToken(tag) => {
+                let name = &*tag.name;
+                let start = tag.kind == TagKind::StartTag;
+                if self.raw_skip.get() {
+                    // In a raw-text state the only tag emitted is the element's own end.
+                    self.raw_skip.set(false);
+                    return TokenSinkResult::Continue;
+                }
+                if name == "template" {
+                    let open = self.templates.get();
+                    self.templates.set(if start {
+                        open + 1
+                    } else {
+                        open.saturating_sub(1)
+                    });
+                    return TokenSinkResult::Continue;
+                }
+                if is_block(name) && self.templates.get() == 0 {
+                    self.space.set(true);
+                }
+                // The tree builder's switches for an HTML element (WHATWG "in body"), so
+                // a raw body is read as a browser reads it. Inside a template, too: its
+                // contents are parsed, and a script there is still a script.
+                if start {
+                    let skip = |kind| {
+                        self.raw_skip.set(true);
+                        TokenSinkResult::RawData(kind)
+                    };
+                    return match name {
+                        "script" => skip(RawKind::ScriptData),
+                        "style" | "iframe" | "noembed" | "noframes" => skip(RawKind::Rawtext),
+                        "xmp" => TokenSinkResult::RawData(RawKind::Rawtext),
+                        "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+                        "plaintext" => TokenSinkResult::Plaintext,
+                        _ => TokenSinkResult::Continue,
+                    };
+                }
+            }
+            // Comments, doctypes, NUL (which the tree builder drops in body text), parse
+            // errors and the end are not text.
+            _ => {}
+        }
+        TokenSinkResult::Continue
+    }
+}
+
+/// Whether a start or end tag `name` separates the words on either side: the block-level
+/// and table elements, and `br`.
+fn is_block(name: &str) -> bool {
+    matches!(
+        name,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "br"
+            | "caption"
+            | "dd"
+            | "details"
+            | "dialog"
+            | "div"
+            | "dl"
+            | "dt"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hgroup"
+            | "hr"
+            | "li"
+            | "main"
+            | "nav"
+            | "ol"
+            | "option"
+            | "p"
+            | "pre"
+            | "section"
+            | "summary"
+            | "table"
+            | "tbody"
+            | "td"
+            | "tfoot"
+            | "th"
+            | "thead"
+            | "tr"
+            | "ul"
+    )
 }

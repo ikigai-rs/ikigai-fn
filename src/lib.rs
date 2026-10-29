@@ -184,6 +184,34 @@ pub fn greet() -> FnEndpoint {
     )
 }
 
+fn html_to_text_impl(inv: &Invocation<'_>) -> Result<Representation> {
+    let text = html::to_text(inv.inline_str("in")?);
+    Ok(Representation::new(text_plain_utf8(), text.into_bytes()).cacheable())
+}
+
+/// `html-to-text`: the words the HTML in `in` shows a reader, as one line of plain text
+/// ([`html::to_text`]) — the text face a lift stores beside an RSS description, so a
+/// search runs over words and not over `strong`, `img` or `href`.
+pub fn html_to_text() -> FnEndpoint {
+    FnEndpoint::new("html-to-text", html_to_text_impl).with_description(
+        Description::new("html-to-text")
+            .title("HTML to text")
+            .summary(
+                "The text the HTML in `in` shows a reader: tags, comments, scripts and \
+                 styles removed, character references decoded, whitespace collapsed to \
+                 one line. Parsed by html5ever's WHATWG tokenizer.",
+            )
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+            .input(
+                ArgSpec::new("in")
+                    .summary("the HTML, as text")
+                    .class(XSD_STRING),
+            )
+            .output(TEXT_PLAIN_UTF8),
+    )
+}
+
 fn echo_impl(inv: &Invocation<'_>) -> Result<Representation> {
     let message = inv
         .bindings
@@ -1844,6 +1872,7 @@ pub fn space() -> EndpointSpace {
         .bind(Exact::new("urn:iki:fn:compose"), compose())
         .bind(Exact::new("urn:iki:fn:conditional"), conditional())
         .bind(Exact::new("urn:iki:fn:each"), each())
+        .bind(Exact::new("urn:iki:fn:html-to-text"), html_to_text())
         .bind(Exact::new("urn:demo:wrap"), wrap())
         .bind(Exact::new("urn:demo:split"), split())
         .bind(Exact::new("urn:demo:greet"), greet())
@@ -2079,6 +2108,7 @@ mod tests {
         for expected in [
             "urn:iki:fn:toUpper",
             "urn:iki:fn:reverseList",
+            "urn:iki:fn:html-to-text",
             "urn:demo:split",
             "urn:demo:wrap",
             "urn:demo:greet",

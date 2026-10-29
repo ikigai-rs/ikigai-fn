@@ -19,6 +19,7 @@ an in-browser WebAssembly host alike (no WASI required).
 | `compose_over(src)` | none — bind it at a view's name | `compose` with the template fixed; the name's captured variables are its arguments; `.named(…)` gives each view its own endpoint name |
 | `conditional()` | `urn:iki:fn:conditional` | lazy `if`/`then`/`else`; only the taken branch runs; `equals=` branches on a value |
 | `each()` | `urn:iki:fn:each` | fills `template` once per element of the JSON array `src`; optional `empty` and `separator` |
+| `html_to_text()` | `urn:iki:fn:html-to-text` | the words the HTML in `in` shows a reader, as one line of text (`html::to_text`) |
 | `split()` | `urn:demo:split` | splits `in` on commas into a newline list |
 | `wrap()` | `urn:demo:wrap` | surrounds the `text` argument with `[ ]` |
 | `greet()` | `urn:demo:greet` | combines `greeting` and `name` |
@@ -196,6 +197,14 @@ built in Rust, a `compose` template and a port in another language agree:
 | a whole link target from data | `safe_href`, then `attr`: `Some` only for `http://`, `https://` (any case) or a single-`/` path; `None` means render text |
 | htmx `hx-vals` | `json_attr` (a JSON object of strings, escaped for an attribute) |
 
+The other direction, HTML that arrived as text (an RSS `description` or
+`content:encoded`) turned into the words it shows, is `to_text`, served as
+`urn:iki:fn:html-to-text`. It tokenizes with html5ever (Servo's WHATWG tokenizer) and keeps
+only text: tags, attribute values, comments, and `script`/`style`/`template` bodies are
+dropped, references decoded, a block boundary or `<br>` separates words, whitespace
+collapses to one line. The answer is text, so it goes back into a page through `html_text`.
+A lift can store it beside the HTML, so a search matches words and not `strong` or `href`.
+
 `compose`'s `$h{…}` escapes with `html_text` and percent-encodes IRI arguments with
 `url_segment`, so there is one implementation. The contract is the shared vectors file
 [`tests/vectors/html_vectors.json`](tests/vectors/html_vectors.json): hand-written inputs
@@ -210,7 +219,7 @@ against both functions and against compose.
 
 `space()` passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
 (`tests/conformance.rs`): every input classed, every result cacheable and held to
-it, no capability enforced that is not declared. The six text functions are pure
+it, no capability enforced that is not declared. The seven text functions are pure
 functions of their arguments (an empty golden-thread set, by design); `compose`,
 `conditional` and `each` are exactly as cacheable as the resources they resolve — a shape
 served under a golden thread makes the composite cacheable under that thread and a
