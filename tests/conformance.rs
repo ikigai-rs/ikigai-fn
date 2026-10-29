@@ -92,8 +92,8 @@
 
 use ikigai_conformance::{Check, Finding, Fixture, Suite};
 use ikigai_core::{
-    ArgRef, Capability, Description, Error, Exact, Expiry, FnEndpoint, Invocation, Iri, Kernel,
-    ReprType, Representation, Request, Verb,
+    ArgRef, Capability, Description, EndpointSpace, Error, Exact, Expiry, FnEndpoint, Invocation,
+    Iri, Kernel, ReprType, Representation, Request, Verb,
 };
 use std::collections::BTreeSet;
 use std::sync::{Arc, RwLock};
@@ -193,6 +193,7 @@ fn resource(
 /// IRI, or every resource live.
 struct Fixtures {
     kernel: Kernel,
+    space: Arc<EndpointSpace>,
     shape: Arc<RwLock<&'static str>>,
     flag: Arc<RwLock<&'static str>>,
 }
@@ -256,8 +257,10 @@ fn fixtures(threaded: bool) -> Fixtures {
                 thread(ROW_STORE),
             ),
         );
+    let space = Arc::new(space);
     Fixtures {
-        kernel: Kernel::new(Arc::new(space)),
+        kernel: Kernel::new(space.clone()),
+        space,
         shape,
         flag,
     }
@@ -296,7 +299,7 @@ fn text(kernel: &Kernel, request: Request) -> String {
 
 #[test]
 fn conforms() {
-    let Fixtures { kernel, .. } = fixtures(true);
+    let Fixtures { kernel, space, .. } = fixtures(true);
     let fixture_ids: Vec<String> = [
         SHAPE_IRI,
         FLAG_IRI,
@@ -308,9 +311,13 @@ fn conforms() {
     .into_iter()
     .map(fixture_id)
     .collect();
+    // BODIES must invoke endpoints in the same space as the kernel. No input
+    // declares reads_body, so BODY-INPUTS currently needs no content store.
     let suite = PURE
         .iter()
-        .fold(Suite::new(), |suite, id| suite.pure(*id).cacheable(*id));
+        .fold(Suite::new().body_space(space), |suite, id| {
+            suite.pure(*id).cacheable(*id)
+        });
     let suite = RESOLVERS
         .iter()
         .map(|id| id.to_string())
@@ -338,6 +345,11 @@ fn conforms() {
     let suite = suite.self_named_space("fn", ikigai_fn::space);
     let report = suite.run_blocking(&kernel);
     eprintln!("{report}");
+    // Every fixture in this walk is deterministic; missing probe setup is a failure.
+    assert!(
+        report.unprobed.is_empty(),
+        "all deterministic checks must be probed: {report}"
+    );
     assert_eq!(ikigai_core::space_iri("fn").as_str(), ikigai_fn::SPACE_ID);
 
     // NAMES reports exactly the coordinated-wave exceptions — no more (a new
@@ -488,6 +500,7 @@ fn over_live_resources_nothing_is_cached() {
         kernel,
         shape,
         flag,
+        ..
     } = fixtures(false);
 
     let composite = issue(&kernel, compose_request()).unwrap();
