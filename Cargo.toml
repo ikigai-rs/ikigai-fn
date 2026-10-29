@@ -34,9 +34,9 @@ futures = "0.3"
 # Exercise REPL argument routing against this module's real Meta contract.
 ikigai-engine = "0.2.2"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
-# endpoint and reports every violation at once. 0.11.0 enables DATATYPES
-# and FAILURES by default, alongside the existing checks and per-check waivers.
-ikigai-conformance = "0.11.0"
+# endpoint and reports every violation at once. 0.12.0 enables BODIES
+# and BODY-INPUTS by default, alongside the existing checks and per-check waivers.
+ikigai-conformance = "0.12.0"
 # Only the tests: `tests/declared_views.rs` proves named views against core's builder
 # (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.
 # 0.2.0 is the streams release (ledger #2261); the old 0.1 pin meant
