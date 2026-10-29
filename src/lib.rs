@@ -280,7 +280,11 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// `urn:json:query` under the caller's capability; outside, the name does not exist.
 ///
 /// A marker may carry inline arguments (`$a{urn:iki:fn:toUpper?in="resource oriented
-/// computing"}`); a literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
+/// computing"}`). An unquoted `<iri>` argument is a reference, issued to the kernel as
+/// [`ArgRef::Reference`]: `$r{urn:iki:fn:toUpper?in=<urn:example:data>}`. The target's
+/// contract determines how the kernel settles it. `{name}` inside `<…>` is
+/// percent-encoded as in an IRI; a quoted `"<urn:example:data>"` stays inline text.
+/// A literal `$` is written `$$`, so `$$h{…}` is the literal text `$h{…}`.
 /// [`escape_markers`] writes any text that way, and [`MARKER_LETTERS`] lists the letters.
 ///
 /// **Escaping.** `$h` escapes with [`html::html_text`]: `&`, `<`, `>`, `"` and `'` become
@@ -316,8 +320,8 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 ///   `:` survive, so the value can pick any resource under the prefix. The template's own
 ///   text before its first argument must hold the scheme and its `:`, so a reserved
 ///   argument never chooses the scheme (`$r{{+x}}` is refused when parsed); `{+name}` in an
-///   argument value is refused too, since `{name}` there is already verbatim;
-/// - in an unquoted argument value it IS the value, verbatim, and still one value:
+///   inline argument value is refused too, since `{name}` there is already verbatim;
+/// - in an unquoted inline argument value it IS the value, verbatim, and still one value:
 ///   `$r{urn:iki:fn:toUpper?in={name}}`;
 /// - in a quoted value it is literal text: `in="{name}"` passes six characters.
 ///
@@ -1274,10 +1278,11 @@ enum Args<'e> {
 /// One element's template arguments: its top-level fields (or `value`), and `index`.
 type Fields = std::collections::BTreeMap<String, String>;
 
-/// A marker argument's value: quoted (`"…"`, literal) or not (may name arguments).
+/// A marker argument: quoted literal text, unquoted text, or an `<iri>` reference.
 struct Value {
     text: String,
     literal: bool,
+    reference: bool,
 }
 
 /// A parsed marker: how it splices, its body as written, and its alternatives in order.
@@ -1555,15 +1560,25 @@ fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
     None
 }
 
-/// Split `s` on every `sep` outside a `"…"` span (where `\"` and `\\` are escapes).
+/// Split `s` on every `sep` outside quoted text and `<iri>` argument values.
 fn split_outside_quotes<'s>(s: &'s str, sep: &str) -> Vec<&'s str> {
     let b = s.as_bytes();
     let mut parts = Vec::new();
     let mut start = 0;
     let mut i = 0;
     let mut in_quote = false;
+    let mut in_reference = false;
     while i < b.len() {
         match b[i] {
+            b'<' if !in_quote && !in_reference && s[..i].trim_end().ends_with('=') => {
+                in_reference = true;
+                i += 1;
+            }
+            b'>' if in_reference => {
+                in_reference = false;
+                i += 1;
+            }
+            _ if in_reference => i += 1,
             b'\\' if in_quote => i += 2,
             b'"' => {
                 in_quote = !in_quote;
@@ -1654,12 +1669,18 @@ fn parse_marker(mode: Mode, body: &str) -> Result<Marker> {
                     Some(text) => Value {
                         text,
                         literal: true,
+                        reference: false,
                     },
                     None => {
-                        check_placeholders(value, false).map_err(refuse)?;
+                        let reference = value
+                            .strip_prefix('<')
+                            .and_then(|iri| iri.strip_suffix('>'));
+                        let text = reference.unwrap_or(value);
+                        check_placeholders(text, reference.is_some()).map_err(refuse)?;
                         Value {
-                            text: value.to_string(),
+                            text: text.to_string(),
                             literal: false,
+                            reference: reference.is_some(),
                         }
                     }
                 };
@@ -1693,9 +1714,14 @@ fn alt_request(inv: &Invocation<'_>, from: Args<'_>, body: &str, alt: &Alt) -> R
                 let text = if value.literal {
                     value.text.clone()
                 } else {
-                    fill_arguments(inv, from, &value.text, false)?
+                    fill_arguments(inv, from, &value.text, value.reference)?
                 };
-                request = request.with_arg(key.clone(), ArgRef::Inline(text.into_bytes()));
+                let arg = if value.reference {
+                    ArgRef::Reference(Iri::parse(&text).map_err(bad_iri)?)
+                } else {
+                    ArgRef::Inline(text.into_bytes())
+                };
+                request = request.with_arg(key.clone(), arg);
             }
             Ok(request)
         }

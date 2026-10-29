@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 (ledger #2506)
+
+- Compose marker arguments written as unquoted `<iri>` values are issued as
+  references. The kernel settles them by the target contract; quoted angle values
+  remain inline text. Quote literal markup arguments that begin and end with angle
+  brackets (for example, `in="<i>x</i>"`). Template variables inside references are percent-encoded,
+  and query delimiters inside angle brackets stay in the reference IRI. Requires
+  ikigai-core 0.2.8 for contract-based reference settlement (K1).
+
 ## 0.7.2 (ledger #2528)
 
 - `html::to_text` and the `html-to-text` endpoint at `urn:iki:fn:html-to-text`, in

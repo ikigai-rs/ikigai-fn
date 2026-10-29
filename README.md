@@ -69,6 +69,10 @@ recomputes it.
   `MARKER_LETTERS` lists the letters that open a marker. Both are built from the
   list compose's own scanner reads, so a host that uses them instead of a copy
   cannot fall behind when compose learns a letter.
+- **Reference arguments.** An unquoted `<iri>` value, such as
+  `$r{urn:iki:fn:toUpper?in=<urn:example:data>}`, is issued as a reference;
+  the kernel settles it by the target contract. `{name}` inside `<…>` is
+  percent-encoded. Quote an angle value to keep it inline: `in="<i>text</i>"`.
 - **Template arguments.** Every argument of the request but `src` is a template
   argument, and a marker names one as `{name}`: percent-encoded in an IRI
   (`$h{urn:example:cell:{x}:{y}}`), verbatim as an unquoted value, literal

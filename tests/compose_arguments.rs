@@ -68,3 +68,73 @@ fn repl_supplies_a_named_template_parameter_to_compose() {
     };
     assert_eq!(entry.result, Ok("minimum: 6".to_string()));
 }
+
+/// An endpoint without a contract sees the argument exactly as compose issued it.
+fn marker_kernel(template: &'static str) -> Kernel {
+    use ikigai_core::{ArgRef, FnEndpoint, Invocation};
+    let inspect = FnEndpoint::new("inspect argument", |inv: &Invocation<'_>| {
+        let value = match inv.request.args.get("in").expect("marker supplies in") {
+            ArgRef::Reference(iri) => format!("reference:{iri}"),
+            ArgRef::Inline(bytes) => format!("inline:{}", String::from_utf8_lossy(bytes)),
+            other => panic!("unexpected argument: {other:?}"),
+        };
+        Ok(Representation::new(
+            ReprType::new("text/plain"),
+            value.into_bytes(),
+        ))
+    });
+    Kernel::new(Arc::new(
+        ikigai_fn::space()
+            .bind(Exact::new("urn:t:page"), html(template))
+            .bind(Exact::new("urn:t:echo"), inspect)
+            .bind(Exact::new("urn:t:data"), html("hello")),
+    ))
+}
+
+#[test]
+fn unquoted_angle_argument_is_issued_as_a_reference() {
+    let kernel = marker_kernel("$r{urn:t:echo?in=<urn:t:data>}");
+    assert_eq!(
+        compose(&kernel, "urn:t:page", &[]).unwrap(),
+        "reference:urn:t:data"
+    );
+}
+
+#[test]
+fn quoted_angle_argument_stays_inline() {
+    let kernel = marker_kernel(r#"$r{urn:t:echo?in="<urn:t:data>"}"#);
+    assert_eq!(
+        compose(&kernel, "urn:t:page", &[]).unwrap(),
+        "inline:<urn:t:data>"
+    );
+}
+
+#[test]
+fn reference_placeholder_is_percent_encoded() {
+    let kernel = marker_kernel("$r{urn:t:echo?in=<urn:t:{var}>}");
+    assert_eq!(
+        compose(&kernel, "urn:t:page", &[("var", "data/one?x=y&z=#two")]).unwrap(),
+        "reference:urn:t:data%2Fone%3Fx%3Dy%26z%3D%23two"
+    );
+}
+
+#[test]
+fn kernel_settles_marker_reference_by_target_contract() {
+    let kernel = marker_kernel("$r{urn:iki:fn:toUpper?in=<urn:t:data>}");
+    assert_eq!(compose(&kernel, "urn:t:page", &[]).unwrap(), "HELLO");
+}
+
+#[test]
+fn reference_query_delimiters_stay_inside_the_reference() {
+    let kernel = marker_kernel("$r{urn:t:echo?in=<urn:t:data?a=1&b=2>&unused=yes}");
+    assert_eq!(
+        compose(&kernel, "urn:t:page", &[]).unwrap(),
+        "reference:urn:t:data?a=1&b=2"
+    );
+}
+
+#[test]
+fn invalid_reference_iri_uses_marker_fallback() {
+    let kernel = marker_kernel("$r{urn:t:echo?in=<not-an-iri> || urn:t:data}");
+    assert_eq!(compose(&kernel, "urn:t:page", &[]).unwrap(), "hello");
+}
