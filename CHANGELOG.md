@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (ledger #2528)
+## 0.7.2 (ledger #2528)
 
 - `html::to_text` and the `html-to-text` endpoint at `urn:iki:fn:html-to-text`, in
   `space()`: the words HTML shows a reader, as one line of plain text. It is built on
