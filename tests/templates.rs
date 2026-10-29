@@ -79,7 +79,7 @@ fn h_escapes_a_value_for_text_and_both_quoted_attribute_forms() {
 #[test]
 fn r_splices_as_it_is_and_a_double_dollar_keeps_every_marker_literal() {
     let kernel = kernel_with(
-        "[$r{urn:iki:fn:toUpper?in=<i>x</i>}] $$h{urn:example:mark} $$r{urn:example:mark}",
+        r#"[$r{urn:iki:fn:toUpper?in="<i>x</i>"}] $$h{urn:example:mark} $$r{urn:example:mark}"#,
         base(),
     );
     assert_eq!(
