@@ -300,6 +300,12 @@ and a per-prefix alias cannot describe a half-moved shared prefix: aliasing
 `urn:demo:*` to a name nothing binds. A shared namespace moves atomically across
 every binder or not at all.
 
+## Accessibility
+
+What this crate emits that people read (filled templates, escaped text and links, the text face
+of HTML, error messages), the rules that output follows and how to report a barrier are in
+[ACCESSIBILITY.md](ACCESSIBILITY.md).
+
 ## License
 
 Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at
