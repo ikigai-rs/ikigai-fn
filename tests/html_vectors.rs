@@ -214,6 +214,16 @@ fn url_segment_round_trips_and_adds_no_delimiter() {
             }
         }
         assert_eq!(decoded, input.as_bytes(), "{input:?} round-trips");
+        for plus in [false, true] {
+            assert_eq!(
+                ikigai_fn::html::percent_decode(&encoded, plus).unwrap(),
+                input
+            );
+            assert_eq!(
+                ikigai_fn::html::percent_decode_bytes(encoded.as_bytes(), plus).unwrap(),
+                input.as_bytes()
+            );
+        }
     }
 }
 
@@ -228,4 +238,36 @@ fn an_admitted_target_still_needs_attr() {
         format!("<a href=\"{}\">", attr(admitted)),
         "<a href=\"https://example.org/a?b=1&amp;c=&quot;2&quot;\">"
     );
+}
+
+#[test]
+fn percent_decode_matches_the_vectors() {
+    use ikigai_fn::html::{percent_decode, percent_decode_bytes, PercentDecodeError};
+    for case in cases(&vectors(), "percent_decode") {
+        let input = text(case, "in");
+        let plus = case["plus_is_space"].as_bool().unwrap();
+        let decoded = percent_decode(input, plus);
+        let bytes = percent_decode_bytes(input.as_bytes(), plus);
+        match case["error"].as_str() {
+            Some("malformed_escape") => {
+                let expected = PercentDecodeError::MalformedEscape {
+                    offset: case["offset"].as_u64().unwrap() as usize,
+                };
+                assert_eq!(decoded.unwrap_err(), expected, "{case}");
+                assert_eq!(bytes.unwrap_err(), expected, "{case}");
+            }
+            error => {
+                let want: Vec<u8> = serde_json::from_value(case["bytes"].clone()).unwrap();
+                assert_eq!(bytes.unwrap(), want, "{case}");
+                match error {
+                    Some("invalid_utf8") => assert!(
+                        matches!(decoded, Err(PercentDecodeError::InvalidUtf8(_))),
+                        "{case}"
+                    ),
+                    None => assert_eq!(decoded.unwrap(), text(case, "out"), "{case}"),
+                    _ => panic!("unknown decoder error in {case}"),
+                }
+            }
+        }
+    }
 }
