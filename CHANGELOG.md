@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add `html::form_pairs`, a strict form/query parser that preserves ordered pairs
+  and reports malformed escapes and invalid UTF-8 at byte offsets in the original
+  input. Add shared form vectors for ports and document which errors the text and
+  byte percent decoders can return.
+
 ## 0.8.0 (ledger #2506)
 
 - Compose marker arguments written as unquoted `<iri>` values are issued as

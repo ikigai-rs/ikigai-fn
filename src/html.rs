@@ -16,6 +16,7 @@
 //!
 //! Percent escapes decode through [`percent_decode`] (text) or [`percent_decode_bytes`].
 //! Both are strict, with an explicit choice of whether `+` means space.
+//! [`form_pairs`] parses a complete form body or query with offsets in that original input.
 //!
 //! And one function goes the other way: [`to_text`] reads HTML that arrived as text (an
 //! RSS description) and answers the words it shows, for a search or a summary.
@@ -104,6 +105,9 @@ pub fn url_segment(value: &str) -> String {
 }
 
 /// Why strict percent decoding refused an input.
+///
+/// [`percent_decode`] can return either variant; [`percent_decode_bytes`] returns
+/// only [`MalformedEscape`](Self::MalformedEscape), because it does not validate UTF-8.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PercentDecodeError {
     /// A `%` at this byte offset was not followed by two ASCII hex digits.
@@ -161,6 +165,8 @@ pub fn percent_decode(input: &str, plus_is_space: bool) -> Result<String, Percen
 /// `input` and the result may contain arbitrary bytes; no UTF-8 replacement is done.
 /// Choose `plus_is_space` explicitly, as for [`percent_decode`]. Error offsets refer
 /// to bytes in the original input. Both uppercase and lowercase hex are accepted.
+/// Only [`PercentDecodeError::MalformedEscape`] can be returned; this function
+/// never returns [`PercentDecodeError::InvalidUtf8`].
 ///
 /// ```
 /// use ikigai_fn::html::percent_decode_bytes;
@@ -205,6 +211,94 @@ pub fn percent_decode_bytes(
         }
     }
     Ok(out)
+}
+
+/// A refused form component, with its zero-based byte offset in the original body
+/// or query (not in the decoded text). No partial pairs are returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormPairsError {
+    /// The malformed `%`, or the source byte that starts the invalid UTF-8 sequence.
+    pub offset: usize,
+    /// The decoding failure. A malformed-escape offset here is component-relative;
+    /// use [`offset`](Self::offset) for the position in the complete input.
+    pub source: PercentDecodeError,
+}
+
+impl std::fmt::Display for FormPairsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match &self.source {
+            PercentDecodeError::MalformedEscape { .. } => "malformed percent-escape",
+            PercentDecodeError::InvalidUtf8(_) => "decoded bytes are not UTF-8",
+        };
+        write!(f, "form_pairs: {reason} at byte {}", self.offset)
+    }
+}
+
+impl std::error::Error for FormPairsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// Parse `application/x-www-form-urlencoded` into ordered UTF-8 name/value pairs.
+///
+/// Split on literal `&`, skip empty fields, and split each remaining field at its
+/// first literal `=`. A field without `=` has an empty value. Empty names and
+/// duplicate names are preserved. Decode names and values exactly once, treating
+/// `+` as space; encoded delimiters remain data. No leading `?` is stripped.
+///
+/// Malformed escapes and invalid UTF-8 refuse the entire input. Errors identify
+/// byte offsets in the original body or query, including for invalid UTF-8 after
+/// percent escapes. Fields are checked in order, name before value; within each
+/// component malformed escapes are checked before UTF-8, as in [`percent_decode`].
+/// Decoded data still needs escaping or link validation for its destination.
+///
+/// ```
+/// use ikigai_fn::html::form_pairs;
+/// assert_eq!(form_pairs("tag=c%2B%2B&tag=rust+lang&flag").unwrap(),
+///     [("tag".into(), "c++".into()), ("tag".into(), "rust lang".into()),
+///      ("flag".into(), "".into())]);
+/// assert_eq!(form_pairs("ok=1&bad=%41%FF").unwrap_err().offset, 12);
+/// ```
+pub fn form_pairs(input: &str) -> Result<Vec<(String, String)>, FormPairsError> {
+    fn component(input: &str, base: usize) -> Result<String, FormPairsError> {
+        percent_decode(input, true).map_err(|source| {
+            let offset = match &source {
+                PercentDecodeError::MalformedEscape { offset } => *offset,
+                PercentDecodeError::InvalidUtf8(error) => {
+                    // Map the first invalid decoded byte back through percent triplets.
+                    // Escapes are already validated; every triplet emits exactly one byte.
+                    let mut original = 0;
+                    for _ in 0..error.utf8_error().valid_up_to() {
+                        original += if input.as_bytes()[original] == b'%' {
+                            3
+                        } else {
+                            1
+                        };
+                    }
+                    original
+                }
+            };
+            FormPairsError {
+                offset: base + offset,
+                source,
+            }
+        })
+    }
+
+    let mut pairs = Vec::new();
+    let mut base = 0;
+    for field in input.split('&') {
+        if !field.is_empty() {
+            let (name, value) = field.split_once('=').unwrap_or((field, ""));
+            let name_decoded = component(name, base)?;
+            let value_decoded =
+                component(value, base + name.len() + usize::from(field.contains('=')))?;
+            pairs.push((name_decoded, value_decoded));
+        }
+        base += field.len() + 1;
+    }
+    Ok(pairs)
 }
 
 /// Append [`url_segment`]`(value)` to `out`.
