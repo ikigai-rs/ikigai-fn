@@ -271,3 +271,32 @@ fn percent_decode_matches_the_vectors() {
         }
     }
 }
+
+#[test]
+fn form_pairs_matches_the_vectors() {
+    use ikigai_fn::html::{form_pairs, PercentDecodeError};
+    for case in cases(&vectors(), "form_pairs") {
+        let result = form_pairs(text(case, "in"));
+        if let Some(kind) = case["error"].as_str() {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.offset,
+                case["offset"].as_u64().unwrap() as usize,
+                "{case}"
+            );
+            let actual = match &error.source {
+                PercentDecodeError::MalformedEscape { .. } => "malformed_escape",
+                PercentDecodeError::InvalidUtf8(_) => "invalid_utf8",
+            };
+            assert_eq!(actual, kind, "{case}");
+            assert!(error
+                .to_string()
+                .contains(&format!("at byte {}", error.offset)));
+            assert!(std::error::Error::source(&error).is_some());
+        } else {
+            let expected: Vec<(String, String)> =
+                serde_json::from_value(case["out"].clone()).unwrap();
+            assert_eq!(result.unwrap(), expected, "{case}");
+        }
+    }
+}

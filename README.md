@@ -209,6 +209,19 @@ Choose `true` for form/query values or `false` for paths. `%2B` stays a plus in
 both modes, and decoding happens once. Decoded data still needs escaping or link
 validation for its destination.
 
+`form_pairs(input)` parses a complete `application/x-www-form-urlencoded` body or
+query into ordered `(String, String)` pairs. It skips empty `&` fields, splits at
+the first `=`, keeps duplicate and empty names, and gives a missing value the empty
+string. Both names and values decode strictly, once, with `+` as space. Encoded
+`&` and `=` remain data; a leading `?` is not stripped. Any malformed escape or
+invalid UTF-8 refuses the whole input with `FormPairsError`: `offset` identifies
+the byte in the original body or query, and `source` identifies the decoding
+failure. For invalid UTF-8, the offset points to the source byte (or `%` escape)
+that starts the invalid sequence. Fields are checked in order, name before value;
+malformed escapes take precedence over invalid UTF-8 within each component.
+The `form_pairs` section of the shared HTML vectors pins these rules and offsets
+for Python and Deno ports too.
+
 The compatibility fixtures in `tests/fixtures/*_percent_decode.rs` pin the three
 CLI implementations to the source commit named in each file. The byte API agrees
 with the web copy, including raw non-UTF-8 input and either plus mode. With
@@ -216,8 +229,10 @@ with the web copy, including raw non-UTF-8 input and either plus mode. With
 well-formed UTF-8 result. It deliberately refuses malformed escapes that those
 copies pass through and invalid UTF-8 that they replace with U+FFFD. The fixture
 test checks these differences, every encoded byte and every ASCII escape pair.
-CLI migration belongs to the follow-up; Python and Deno ports need this decoder
-and the updated shared vectors as well.
+Intake, web, and the tutorial inspector can replace their form/query splitting
+with `ikigai_fn::html::form_pairs`. Those consumers and the Python and Deno
+implementations live outside this repository; they must adopt the parser and pin
+the updated shared vectors in their own repositories.
 
 The other direction, HTML that arrived as text (an RSS `description` or
 `content:encoded`) turned into the words it shows, is `to_text`, served as
