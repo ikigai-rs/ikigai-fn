@@ -201,6 +201,24 @@ built in Rust, a `compose` template and a port in another language agree:
 | a whole link target from data | `safe_href`, then `attr`: `Some` only for `http://`, `https://` (any case) or a single-`/` path; `None` means render text |
 | htmx `hx-vals` | `json_attr` (a JSON object of strings, escaped for an attribute) |
 
+`percent_decode(input, plus_is_space)` decodes percent escapes to UTF-8 text;
+`percent_decode_bytes(input, plus_is_space)` accepts and returns arbitrary bytes.
+Both refuse malformed escapes with `PercentDecodeError::MalformedEscape` (including
+the byte offset); text decoding also refuses invalid UTF-8 with `InvalidUtf8`.
+Choose `true` for form/query values or `false` for paths. `%2B` stays a plus in
+both modes, and decoding happens once. Decoded data still needs escaping or link
+validation for its destination.
+
+The compatibility fixtures in `tests/fixtures/*_percent_decode.rs` pin the three
+CLI implementations to the source commit named in each file. The byte API agrees
+with the web copy, including raw non-UTF-8 input and either plus mode. With
+`plus_is_space = true`, the text API agrees with intake and embedded on every
+well-formed UTF-8 result. It deliberately refuses malformed escapes that those
+copies pass through and invalid UTF-8 that they replace with U+FFFD. The fixture
+test checks these differences, every encoded byte and every ASCII escape pair.
+CLI migration belongs to the follow-up; Python and Deno ports need this decoder
+and the updated shared vectors as well.
+
 The other direction, HTML that arrived as text (an RSS `description` or
 `content:encoded`) turned into the words it shows, is `to_text`, served as
 `urn:iki:fn:html-to-text`. It tokenizes with html5ever (Servo's WHATWG tokenizer) and keeps

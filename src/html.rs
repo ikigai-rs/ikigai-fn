@@ -14,6 +14,9 @@
 //! | a whole link target from data: `href="{}"` | [`safe_href`], then [`attr`] |
 //! | htmx's `hx-vals='{}'` | [`json_attr`] |
 //!
+//! Percent escapes decode through [`percent_decode`] (text) or [`percent_decode_bytes`].
+//! Both are strict, with an explicit choice of whether `+` means space.
+//!
 //! And one function goes the other way: [`to_text`] reads HTML that arrived as text (an
 //! RSS description) and answers the words it shows, for a search or a summary.
 //!
@@ -98,6 +101,110 @@ pub fn url_segment(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     push_url_segment(value, &mut out);
     out
+}
+
+/// Why strict percent decoding refused an input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PercentDecodeError {
+    /// A `%` at this byte offset was not followed by two ASCII hex digits.
+    MalformedEscape { offset: usize },
+    /// The decoded bytes are not UTF-8. Use [`percent_decode_bytes`] for binary data.
+    InvalidUtf8(std::string::FromUtf8Error),
+}
+
+impl std::fmt::Display for PercentDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedEscape { offset } => {
+                write!(
+                    f,
+                    "percent_decode: malformed percent-escape at byte {offset}"
+                )
+            }
+            Self::InvalidUtf8(_) => write!(f, "percent_decode: decoded bytes are not UTF-8"),
+        }
+    }
+}
+
+impl std::error::Error for PercentDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidUtf8(error) => Some(error),
+            Self::MalformedEscape { .. } => None,
+        }
+    }
+}
+
+/// Decode `%XX` escapes exactly once, refusing malformed escapes and invalid UTF-8.
+///
+/// Choose `plus_is_space = true` for form/query values and `false` for paths. An
+/// escaped plus (`%2B`) stays a plus in either mode. Literal UTF-8 passes through.
+/// For arbitrary bytes, use [`percent_decode_bytes`]. Decoding does not escape HTML
+/// or validate a link: decoded data still needs [`html_text`], [`attr`] or [`safe_href`]
+/// as appropriate for its destination.
+///
+/// ```
+/// use ikigai_fn::html::{percent_decode, url_segment};
+/// assert_eq!(percent_decode("caf%C3%A9+a", true).unwrap(), "café a");
+/// assert_eq!(percent_decode("a+b%2Bc", false).unwrap(), "a+b+c");
+/// assert_eq!(percent_decode(&url_segment("café + %"), false).unwrap(), "café + %");
+/// assert!(percent_decode("%G1", false).is_err());
+/// assert!(percent_decode("%FF", false).is_err());
+/// ```
+pub fn percent_decode(input: &str, plus_is_space: bool) -> Result<String, PercentDecodeError> {
+    let bytes = percent_decode_bytes(input.as_bytes(), plus_is_space)?;
+    String::from_utf8(bytes).map_err(PercentDecodeError::InvalidUtf8)
+}
+
+/// Decode `%XX` escapes into bytes, refusing every malformed escape.
+///
+/// `input` and the result may contain arbitrary bytes; no UTF-8 replacement is done.
+/// Choose `plus_is_space` explicitly, as for [`percent_decode`]. Error offsets refer
+/// to bytes in the original input. Both uppercase and lowercase hex are accepted.
+///
+/// ```
+/// use ikigai_fn::html::percent_decode_bytes;
+/// assert_eq!(percent_decode_bytes(b"%FF+%2b", true).unwrap(), [255, b' ', b'+']);
+/// assert_eq!(percent_decode_bytes(&[255], false).unwrap(), [255]);
+/// assert!(percent_decode_bytes(b"%1", false).is_err());
+/// ```
+pub fn percent_decode_bytes(
+    input: &[u8],
+    plus_is_space: bool,
+) -> Result<Vec<u8>, PercentDecodeError> {
+    fn hex_digit(byte: u8) -> Option<u8> {
+        match byte {
+            b'0'..=b'9' => Some(byte - b'0'),
+            b'a'..=b'f' => Some(byte - b'a' + 10),
+            b'A'..=b'F' => Some(byte - b'A' + 10),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        match input[i] {
+            b'%' => {
+                let hi = input.get(i + 1).copied().and_then(hex_digit);
+                let lo = input.get(i + 2).copied().and_then(hex_digit);
+                match (hi, lo) {
+                    (Some(hi), Some(lo)) => out.push(hi << 4 | lo),
+                    _ => return Err(PercentDecodeError::MalformedEscape { offset: i }),
+                }
+                i += 3;
+            }
+            b'+' if plus_is_space => {
+                out.push(b' ');
+                i += 1;
+            }
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Append [`url_segment`]`(value)` to `out`.
