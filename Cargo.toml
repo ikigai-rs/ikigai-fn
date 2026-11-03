@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-fn"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A library of reusable ikigai function endpoints (toUpper, reverseList, html-to-text, split, wrap, greet, echo, compose, composeOver, conditional, each) — the first ikigai module crate, linkable into native and wasm32 hosts."
@@ -18,7 +18,9 @@ categories = ["wasm"]
 # <0.2.0 under 0.x rules.
 # 0.2.8 supplies contract-based reference settlement (K1, ledger #2511),
 # required by compose marker <iri> arguments.
-ikigai-core = "0.2.8"
+# 0.3.0 is the scoped content store (ledger #2965): held content is scoped to whoever
+# delivered it. Nothing here calls `ContentStore::put` or `put_replay`.
+ikigai-core = "0.3.0"
 async-trait = "0.1"
 futures-util = "0.3"
 # `each` reads its collection with a typed deserializer (a seed that refuses a nested value
@@ -33,14 +35,14 @@ html5ever = "0.40"
 
 [dev-dependencies]
 futures = "0.3"
-# Exercise REPL argument routing against this module's real Meta contract.
-ikigai-engine = "0.2.2"
 # The module recipe as one test (`tests/conformance.rs`): walks every bound
 # endpoint and reports every violation at once. 0.12.0 enables BODIES
 # and BODY-INPUTS by default, alongside the existing checks and per-check waivers.
-ikigai-conformance = "0.12.0"
+# 0.14.0 is the one built on core 0.3.0, the scoped content store (ledger #2965).
+ikigai-conformance = "0.14.0"
 # Only the tests: `tests/declared_views.rs` proves named views against core's builder
 # (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.
 # 0.2.0 is the streams release (ledger #2261); the old 0.1 pin meant
 # <0.2.0 under 0.x rules. Only the feature is test-only.
-ikigai-core = { version = "0.2.8", features = ["declare"] }
+# 0.3.0 is the scoped content store (ledger #2965), matching the requirement above.
+ikigai-core = { version = "0.3.0", features = ["declare"] }

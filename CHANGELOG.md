@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 (ledger #2965)
 
+- Move to ikigai-core 0.3.0, the scoped content store, so the public API now speaks core
+  0.3 types. A host links this release with core 0.3. This crate calls neither
+  `ContentStore::put` nor `put_replay`, so nothing else changes in what it serves.
+- Test with ikigai-conformance 0.14.0. Drop the `ikigai-engine` dev-dependency until a
+  release on core 0.3 is published: `tests/compose_arguments.rs` now issues the REPL's
+  compose request through the kernel instead of parsing the REPL line.
 - Add `html::form_pairs`, a strict form/query parser that preserves ordered pairs
   and reports malformed escapes and invalid UTF-8 at byte offsets in the original
   input. Add shared form vectors for ports and document which errors the text and
