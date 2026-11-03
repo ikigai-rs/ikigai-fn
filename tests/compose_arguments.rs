@@ -8,7 +8,6 @@ use common::*;
 use ikigai_core::{
     Description, Exact, Kernel, MetaRenderer, ReprType, Representation, Request, Verb,
 };
-use ikigai_engine::{Action, Engine};
 
 /// The JSON face of Meta, without depending on a host's renderer crate.
 struct JsonRenderer;
@@ -59,14 +58,15 @@ fn compose_meta_json_declares_open_template_arguments() {
     );
 }
 
+/// What the REPL's `source urn:iki:fn:compose src=urn:file:param.txt min=6` issues once the
+/// contract above has routed `min` by name. `ikigai-engine` drove this until core 0.3.0: its
+/// published release is on core 0.2, a second kernel whose `Kernel` it cannot take.
 #[test]
-fn repl_supplies_a_named_template_parameter_to_compose() {
-    let engine = Engine::new(kernel());
-    let action = engine.eval("source urn:iki:fn:compose src=urn:file:param.txt min=6");
-    let Action::Output(entry) = action else {
-        panic!("expected the composed response");
-    };
-    assert_eq!(entry.result, Ok("minimum: 6".to_string()));
+fn a_named_template_parameter_reaches_compose() {
+    assert_eq!(
+        compose(&kernel(), "urn:file:param.txt", &[("min", "6")]).unwrap(),
+        "minimum: 6"
+    );
 }
 
 /// An endpoint without a contract sees the argument exactly as compose issued it.
