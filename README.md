@@ -13,6 +13,7 @@ an in-browser WebAssembly host alike (no WASI required).
 
 | constructor | conventional IRI | what it does |
 |-------------|------------------|--------------|
+| `digest()` | `urn:iki:fn:digest` | BLAKE3 content id of the exact UTF-8 text in `in`, as `b3:` plus 64 lowercase hex digits |
 | `to_upper()` | `urn:iki:fn:toUpper` | upper-cases the `in` argument |
 | `reverse_list()` | `urn:iki:fn:reverseList` | reverses newline-separated items in `in` |
 | `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}`, `$h{…}` and `$j{…}` markers, see below |
@@ -343,3 +344,17 @@ of HTML, error messages), the rules that output follows and how to report a barr
 
 Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at
 your option.
+
+## Content digests
+
+`digest()` uses core's `ContentId::of`, the cache's content identity rule. It hashes
+exact UTF-8 bytes, without trimming, Unicode normalization, or line-ending conversion,
+and returns plain UTF-8 text without a trailing newline. An empty string is valid;
+missing `in` and invalid UTF-8 are typed errors. Results are pure and cacheable.
+
+A composition can compute an item's identity directly:
+`$h{urn:iki:fn:digest?in=<urn:example:item-text>}`.
+The shared [`digest_vectors.json`](tests/vectors/digest_vectors.json) pins empty text,
+ASCII, whitespace, line endings, Unicode (including distinct normalization forms),
+and NUL for Python and Deno faces to copy and run. Those ports live in their own
+repositories; this patch does not change them.
