@@ -3,7 +3,7 @@
 A library of reusable [ikigai](https://github.com/ikigai-rs) **function
 endpoints** — and the first ikigai *module crate*.
 
-Rather than the kernel shipping behaviour itself, a host links in module crates
+Rather than the kernel shipping behavior itself, a host links in module crates
 like this one and mounts their resources. `ikigai-fn` depends only on the
 published `ikigai-core` kernel, uses no OS or platform APIs, and compiles to
 `wasm32-unknown-unknown` — so the same module links into a native CLI and into
@@ -189,8 +189,8 @@ caller's own capability. `tests/prefixes.rs` holds the whole example.
 
 ## Escaping and links: `ikigai_fn::html`
 
-One rule for every HTML door that builds markup from data (ledger #1813), so a page
-built in Rust, a `compose` template and a port in another language agree:
+Shared HTML escaping and link rules apply wherever markup is built from data, so a
+page built in Rust, a `compose` template and a port in another language agree:
 
 | Where the value goes | Function |
 |---|---|
