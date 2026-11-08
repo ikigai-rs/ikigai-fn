@@ -1,0 +1,51 @@
+{
+  "algorithm": "BLAKE3",
+  "encoding": "UTF-8",
+  "normalization": "none",
+  "vectors": [
+    {
+      "in": "",
+      "digest": "b3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+    },
+    {
+      "in": "abc",
+      "digest": "b3:6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85"
+    },
+    {
+      "in": "hello",
+      "digest": "b3:ea8f163db38682925e4491c5e58d4bb3506ef8c14eb78a86e908c5624a67200f"
+    },
+    {
+      "in": "hello\n",
+      "digest": "b3:8e4c7c1b99dbfd50e7a95185fead5ee1448fa904a2fdd778eaf5f2dbfd629a99"
+    },
+    {
+      "in": "hello\r\n",
+      "digest": "b3:2b5974a9767a33204c2d1583bb4b1ba70f24e2970cbc522073df001272525954"
+    },
+    {
+      "in": " abc ",
+      "digest": "b3:d22b1f2e587b37bcc17e9578b798a00af18ca19f1e2c2f01133afdf9abd2eb1c"
+    },
+    {
+      "in": "café",
+      "digest": "b3:e4e52b2a0ab9d8584bf4b913af316d96865f92f305b17a0d50b6677bd9ec71c0"
+    },
+    {
+      "in": "café",
+      "digest": "b3:9dd851dd5eb006a97b799121ac8c2d4f72f7100c7e134a747d893e41371a3806"
+    },
+    {
+      "in": "你好 🦀",
+      "digest": "b3:703fdc9854cc3184169d18180c29a7c065392fb31be927827360578bd7eb0386"
+    },
+    {
+      "in": "a\u0000b",
+      "digest": "b3:fdeb88a4c6f022465eedaf052a322770e2875b1052f697e5dd3b6ac7722deea5"
+    },
+    {
+      "in": "$a{urn:example:data}",
+      "digest": "b3:2aca812cfcec4f7e25eb47bf744d257afc59be824e147d50078d4daa5a63b2f7"
+    }
+  ]
+}

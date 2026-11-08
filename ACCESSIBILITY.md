@@ -27,7 +27,7 @@ template](https://github.com/mgifford/ACCESSIBILITY.md) (MIT).
 - **The text face of HTML** (`to_text`, served as `urn:iki:fn:html-to-text`): the words a page
   shows, as one line of plain text.
 - **Plain-text answers** of the small functions (`toUpper`, `reverseList`, `split`, `wrap`,
-  `greet`, `echo`).
+  `greet`, `echo`, `digest`).
 - **Error messages** (`src/lib.rs`, `src/prefix.rs`): a marker that does not parse or does not
   resolve, a template or source that is not text, an `each` source that is not a flat JSON array,
   a `conditional` answer that is not a boolean, a refused prefix table.

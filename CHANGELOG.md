@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add the pure, cacheable `digest()` endpoint at `urn:iki:fn:digest`, using core's
+  BLAKE3 content identity for exact UTF-8 text. Include shared vectors for ports.
+
 ## 0.10.0 (ledger #2965)
 
 - Move to ikigai-core 0.3.0, the scoped content store, so the public API now speaks core

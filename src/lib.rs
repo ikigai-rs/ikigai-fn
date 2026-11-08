@@ -25,8 +25,8 @@ use async_trait::async_trait;
 use futures_util::future::try_join_all;
 
 use ikigai_core::{
-    space_iri, ArgRef, ArgSpec, Description, Endpoint, EndpointSpace, Error, Exact, FnEndpoint,
-    Invocation, Iri, ReprType, Representation, Request, Result, UriTemplate, Verb,
+    space_iri, ArgRef, ArgSpec, ContentId, Description, Endpoint, EndpointSpace, Error, Exact,
+    FnEndpoint, Invocation, Iri, ReprType, Representation, Request, Result, UriTemplate, Verb,
 };
 
 /// The conventional `text/plain; charset=utf-8` representation type.
@@ -49,6 +49,33 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
 
 // --- simple, idempotent, perfectly cacheable functions --------------------
+
+fn digest_impl(inv: &Invocation<'_>) -> Result<Representation> {
+    let input = inv.inline_str("in")?;
+    let digest = ContentId::of(input.as_bytes()).to_string();
+    Ok(Representation::new(text_plain_utf8(), digest.into_bytes()).cacheable())
+}
+
+/// `digest`: the BLAKE3 content id of the exact UTF-8 bytes in `in`.
+///
+/// Uses core's [`ContentId::of`], the cache's identity rule, and returns `b3:` followed
+/// by 64 lowercase hexadecimal digits, without a newline. No trimming, Unicode
+/// normalization, or line-ending conversion is applied.
+pub fn digest() -> FnEndpoint {
+    FnEndpoint::new("digest", digest_impl).with_description(
+        Description::new("digest")
+            .title("Content digest")
+            .summary("Returns the BLAKE3 content id (b3: plus lowercase hex) of the exact UTF-8 bytes in `in`, without normalization or a trailing newline.")
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+            .input(
+                ArgSpec::new("in")
+                    .summary("the text to digest, preserved exactly")
+                    .class(XSD_STRING),
+            )
+            .output(TEXT_PLAIN_UTF8),
+    )
+}
 
 fn to_upper_impl(inv: &Invocation<'_>) -> Result<Representation> {
     let input = inv.inline_str("in")?;
@@ -1894,6 +1921,7 @@ pub fn space() -> EndpointSpace {
     let echo_template = UriTemplate::parse("urn:demo:echo/{message}").expect("valid template");
     EndpointSpace::new()
         .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
+        .bind(Exact::new("urn:iki:fn:digest"), digest())
         .bind(Exact::new("urn:iki:fn:reverseList"), reverse_list())
         .bind(Exact::new("urn:iki:fn:compose"), compose())
         .bind(Exact::new("urn:iki:fn:conditional"), conditional())
@@ -2132,6 +2160,7 @@ mod tests {
         // `ActionMatch::endpoint` is the bound IRI — the thing a caller would invoke.
         let strings = names(&[XSD_STRING]);
         for expected in [
+            "urn:iki:fn:digest",
             "urn:iki:fn:toUpper",
             "urn:iki:fn:reverseList",
             "urn:iki:fn:html-to-text",
