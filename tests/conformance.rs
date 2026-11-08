@@ -1,9 +1,9 @@
 //! The module recipe as one test: `ikigai-conformance` walks every endpoint
 //! [`ikigai_fn::space`] binds and reports every violation at once.
 //!
-//! ## Eight pure functions, three resolvers
+//! ## Nine pure functions, three resolvers
 //!
-//! `digest`, `toUpper`, `reverseList`, `html-to-text`, `split`, `wrap`, `greet` and `echo` read nothing but
+//! `digest`, `markdown`, `toUpper`, `reverseList`, `html-to-text`, `split`, `wrap`, `greet` and `echo` read nothing but
 //! their inline arguments (or, for `echo`, the segment the grammar captured): no
 //! file, network, clock or platform read. Each is declared `pure` — a cacheable
 //! result with an empty golden-thread set is right for them, nothing ever needs to
@@ -100,8 +100,9 @@ use std::sync::{Arc, RwLock};
 
 /// The endpoints `space()` binds that are pure functions of their inputs, by
 /// description id.
-const PURE: [&str; 8] = [
+const PURE: [&str; 9] = [
     "digest",
+    "markdown",
     "toUpper",
     "reverseList",
     "html-to-text",
@@ -602,6 +603,7 @@ fn required_inputs_are_required() {
     );
     let cases: &[Case] = &[
         ("urn:iki:fn:digest", &[("in", "x")], "in"),
+        ("urn:iki:fn:markdown", &[("content", "x")], "content"),
         ("urn:iki:fn:toUpper", &[("in", "x")], "in"),
         ("urn:iki:fn:reverseList", &[("in", "x")], "in"),
         ("urn:iki:fn:html-to-text", &[("in", "x")], "in"),

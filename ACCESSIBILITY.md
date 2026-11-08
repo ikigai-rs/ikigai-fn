@@ -12,7 +12,7 @@ template](https://github.com/mgifford/ACCESSIBILITY.md) (MIT).
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-fn/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-fn/security/advisories/new) |
-| Last reviewed | 2026-10-31 |
+| Last reviewed | 2026-11-08 |
 
 ## What it emits that people read
 
@@ -24,6 +24,9 @@ template](https://github.com/mgifford/ACCESSIBILITY.md) (MIT).
   for element text and attributes, `url_segment` and `url_reserved` for names, `safe_href` for
   a link target from data (`None` means render the label as text, not a link), and `json_attr`
   for `hx-vals`. Every HTML door that uses them gets the same output.
+- **Rendered Markdown** (`src/markdown.rs`, served as `urn:iki:fn:markdown`): a body someone
+  else wrote, as an XHTML fragment. Its words, headings, lists and tables are the author's; the
+  element structure, the task-box label and the notice for a refused body are this crate's.
 - **The text face of HTML** (`to_text`, served as `urn:iki:fn:html-to-text`): the words a page
   shows, as one line of plain text.
 - **Plain-text answers** of the small functions (`toUpper`, `reverseList`, `split`, `wrap`,
@@ -43,6 +46,13 @@ Verified by reading the source on 2026-10-31:
   than reaching the page raw.
 - A link target from data is kept only for `http://`, `https://` or a single-`/` path; anything else
   is rendered as its label in text, so the words stay even when the link is refused.
+- Rendered Markdown follows the same two rules, except that a link target may also be `mailto:`,
+  `?…` or `#…`. A refused link keeps its words. An image is never loaded: it is a link labeled
+  with its alt text, or the alt text alone when its target is refused.
+- A rendered link with no words is labeled with its target, so it always has an accessible name.
+- Rendered headings start below the page's own (`#` is `<h3>` by default), so a body cannot outrank
+  them. A task box is a disabled `<input>` labeled `task`. A table's column headers are
+  `<th scope="col">`.
 - Element data in `each` reaches the output only escaped; a template that splices it as it is is
   refused, naming the marker.
 - An error names what it is about: the endpoint (`compose:`, `each:`, `conditional:`), and the
@@ -58,6 +68,10 @@ Verified by reading the source on 2026-10-31:
 - `tests/html_to_text.rs` pins what `to_text` keeps and drops (`markup_is_not_text`,
   `blocks_separate_words_and_inline_elements_do_not`, `code_and_comments_are_not_text` and
   others).
+- `tests/markdown.rs` pins each rendering rule with hostile input, checks output with an XML
+  parser, and pins whole documents byte for byte (`raw_html_is_text_never_markup`,
+  `every_other_link_renders_only_its_words`, `a_link_with_no_words_is_labeled_with_its_target`,
+  `every_output_is_well_formed_xml` and others).
 - `tests/escape.rs` pins that escaped template text renders exactly as written.
 - `tests/each.rs` pins that element data reaches the output only escaped
   (`element_data_is_never_spliced_as_it_is`, `the_separator_goes_between_fills_escaped`).
@@ -71,6 +85,11 @@ Found by reading the source on 2026-10-31, not by testing:
 - `to_text` drops every attribute value, `alt` included, so an image's text alternative is not
   in the text face: HTML whose only content is an image becomes empty text. `markup_is_not_text`
   pins this as intended.
+- Rendered Markdown keeps the author's heading order, so a body that jumps from `#` to `###` skips
+  a level, and a body with an image that has no alt text gives a link labeled with a URL. A link
+  whose target is refused gives no sign that it was meant as a link. Task-box and table markup
+  have not been tried with assistive technology.
+- A table column's alignment is an inline `style`, which a strict content security policy drops.
 - Whether a filled template is accessible depends entirely on the template; this crate checks
   nothing about the markup it fills (no `lang`, heading or label check).
 - `conditional`'s refusal prints the answer it could not read in Rust's debug form (`{:?}`).
@@ -98,3 +117,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
+| 2026-11-08 | Added rendered Markdown. |

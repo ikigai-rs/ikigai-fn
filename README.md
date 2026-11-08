@@ -14,6 +14,7 @@ an in-browser WebAssembly host alike (no WASI required).
 | constructor | conventional IRI | what it does |
 |-------------|------------------|--------------|
 | `digest()` | `urn:iki:fn:digest` | BLAKE3 content id of the exact UTF-8 text in `in`, as `b3:` plus 64 lowercase hex digits |
+| `markdown()` | `urn:iki:fn:markdown` | untrusted Markdown in `content` as a safe, well-formed XHTML fragment, see [below](#markdown-from-untrusted-text-ikigai_fnmarkdown); `heading_offset` optional |
 | `to_upper()` | `urn:iki:fn:toUpper` | upper-cases the `in` argument |
 | `reverse_list()` | `urn:iki:fn:reverseList` | reverses newline-separated items in `in` |
 | `compose()` | `urn:iki:fn:compose` | fills a template: `$a{…}`, `$r{…}`, `$h{…}` and `$j{…}` markers, see below |
@@ -252,6 +253,49 @@ a verbatim copy of and runs the same way. The two URI-template forms, `{name}` a
 [`tests/vectors/uri_template_vectors.json`](tests/vectors/uri_template_vectors.json): RFC
 6570's examples for those forms plus a few of ours, run by `tests/uri_template_vectors.rs`
 against both functions and against compose.
+
+## Markdown from untrusted text: `ikigai_fn::markdown`
+
+Bodies that collaborators write are rendered by one walker, in `urn:iki:fn:markdown` for a
+template and in `markdown::render_untrusted(text, &Options)` for a host that renders without a
+kernel round trip. It treats every input as hostile:
+
+| Input | Output |
+|---|---|
+| CommonMark, tables, strikethrough, task lists | the matching elements; a task box is a disabled, labeled `<input>` |
+| an HTML block or an inline tag | escaped text, never markup |
+| a link to `http`, `https`, `mailto`, `/…`, `?…`, `#…` | `<a>`, with `rel="noopener noreferrer"` unless it stays on this origin |
+| any other link (`javascript:`, `data:`, `//host`, …) | its words only |
+| `![alt](url)` | a link to the URL with the alt text if the URL is allowed, otherwise the alt text; never an `<img>` |
+| `#` | `<h3>` by default: `heading_offset` (2) is added to every level, capped at `<h6>` |
+| a code block | `<pre><code>`, with `class="language-…"` only when the name is `[A-Za-z0-9_+-]+`; no highlighting |
+
+`html::safe_href` remains the link authority and keeps its shared contract. Markdown also admits
+`mailto:`, `?…` and `#…`, which `safe_href` refuses, and holds them to its control-character rule.
+
+The fragment is well-formed XML, so an XSLT pipeline can copy it through, and the same input and
+options always give the same bytes. An alignment in a table is an inline `style`, which a page
+with a strict `style-src` policy ignores; the table still reads the same.
+
+**Bounds.** More than `MAX_INPUT_BYTES` (1 MiB), or nesting past `MAX_NESTING` (32 levels; a block
+quote, a list and each of emphasis, strong, strikethrough and a link are one level), is refused
+before parsing, by a single pass that neither recurses nor allocates. The walker counts the same
+levels again and refuses the shapes that pass misread. The endpoint answers `Error::OverBudget`.
+`try_render_untrusted` returns the refusal as a value, and `render_untrusted` answers a one-paragraph
+notice in its place, so the rest of a page still renders.
+
+**Linking ledger items and IRIs is the host's job.** `markdown::map_text_nodes` runs a function
+over the fragment's text nodes, skipping `<a>` and `<code>`. The function receives text as it
+stands in the fragment (escaped), and its answer is spliced as markup, so a host's linkify must
+escape anything it adds:
+
+```rust
+use ikigai_fn::markdown::{map_text_nodes, render_untrusted, Options};
+
+let page = render_untrusted("see #12 and `#13`", &Options::default());
+let linked = map_text_nodes(&page, |text| text.replace("#12", "<a href=\"/item/12\">#12</a>"));
+assert_eq!(linked, "<p>see <a href=\"/item/12\">#12</a> and <code>#13</code></p>");
+```
 
 ## Conformance
 

@@ -14,6 +14,7 @@
 //! library at its conventional IRIs with [`space`].
 
 pub mod html;
+pub mod markdown;
 pub mod prefix;
 
 pub use prefix::{prefix_check, prefix_space, RESERVED_SCHEMES};
@@ -37,6 +38,14 @@ fn text_plain_utf8() -> ReprType {
 /// The same media type as a description-output string.
 const TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
 
+/// The conventional `text/html; charset=utf-8` representation type.
+fn text_html_utf8() -> ReprType {
+    ReprType::new("text/html").with_param("charset", "utf-8")
+}
+
+/// The same media type as a description-output string.
+const TEXT_HTML_UTF8: &str = "text/html;charset=utf-8";
+
 /// The datatype every text-valued input declares. `select_action` and `urn:kernel:actions
 /// types=` match on [`ArgSpec::class`] and nothing else: an input WITHOUT a class is not
 /// "untyped", it is invisible to type-driven selection (a required input with no class
@@ -47,6 +56,9 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 /// The datatype of an input whose value is the IRI of another resource (compose's `src`,
 /// conditional's `if`/`then`/`else`) — the argument names a resource, it does not carry one.
 const XSD_ANY_URI: &str = "http://www.w3.org/2001/XMLSchema#anyURI";
+
+/// The datatype of an input whose value is a count (markdown's `heading_offset`).
+const XSD_NON_NEGATIVE_INTEGER: &str = "http://www.w3.org/2001/XMLSchema#nonNegativeInteger";
 
 // --- simple, idempotent, perfectly cacheable functions --------------------
 
@@ -74,6 +86,53 @@ pub fn digest() -> FnEndpoint {
                     .class(XSD_STRING),
             )
             .output(TEXT_PLAIN_UTF8),
+    )
+}
+
+fn markdown_impl(inv: &Invocation<'_>) -> Result<Representation> {
+    let content = inv.inline_str("content")?;
+    let heading_offset = match inv.inline_str("heading_offset") {
+        Ok(text) => text.parse().map_err(|_| Error::InvalidArgument {
+            name: "heading_offset".to_string(),
+            detail: format!("expected a whole number from 0 to 255, got {text:?}"),
+        })?,
+        Err(Error::MissingArgument(_)) => markdown::Options::default().heading_offset,
+        Err(e) => return Err(e),
+    };
+    let fragment = markdown::try_render_untrusted(content, &markdown::Options { heading_offset })
+        .map_err(|refused| Error::OverBudget {
+        detail: format!("markdown: {refused}"),
+    })?;
+    Ok(Representation::new(text_html_utf8(), fragment.into_bytes()).cacheable())
+}
+
+/// `markdown`: the untrusted Markdown in `content` as a well-formed XHTML fragment
+/// ([`markdown::try_render_untrusted`]). Input past the module's size or nesting bound is
+/// refused as [`Error::OverBudget`].
+pub fn markdown() -> FnEndpoint {
+    FnEndpoint::new("markdown", markdown_impl).with_description(
+        Description::new("markdown")
+            .title("Markdown to HTML")
+            .summary(
+                "Renders untrusted CommonMark, with tables, strikethrough and task lists, as a \
+                 well-formed XHTML fragment. Raw HTML appears as text, only safe links become \
+                 links, images are never fetched, and oversized or too deeply nested text is \
+                 refused.",
+            )
+            .verb(Verb::Source)
+            .verb(Verb::Meta)
+            .input(
+                ArgSpec::new("content")
+                    .summary("the Markdown, as text")
+                    .class(XSD_STRING),
+            )
+            .input(
+                ArgSpec::new("heading_offset")
+                    .summary("added to every heading's level, capped at h6; 2 when absent")
+                    .class(XSD_NON_NEGATIVE_INTEGER)
+                    .optional(),
+            )
+            .output(TEXT_HTML_UTF8),
     )
 }
 
@@ -1922,6 +1981,7 @@ pub fn space() -> EndpointSpace {
     EndpointSpace::new()
         .bind(Exact::new("urn:iki:fn:toUpper"), to_upper())
         .bind(Exact::new("urn:iki:fn:digest"), digest())
+        .bind(Exact::new("urn:iki:fn:markdown"), markdown())
         .bind(Exact::new("urn:iki:fn:reverseList"), reverse_list())
         .bind(Exact::new("urn:iki:fn:compose"), compose())
         .bind(Exact::new("urn:iki:fn:conditional"), conditional())
@@ -2161,6 +2221,7 @@ mod tests {
         let strings = names(&[XSD_STRING]);
         for expected in [
             "urn:iki:fn:digest",
+            "urn:iki:fn:markdown",
             "urn:iki:fn:toUpper",
             "urn:iki:fn:reverseList",
             "urn:iki:fn:html-to-text",

@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 (ledger #3280)
 
+- Add `ikigai_fn::markdown`: `render_untrusted` and `try_render_untrusted` turn Markdown from
+  people the host does not trust into a well-formed XHTML fragment, and `map_text_nodes` lets a
+  host run its own linkify over the result. The same walker is served by the pure, cacheable
+  `markdown()` endpoint at `urn:iki:fn:markdown`. New dependency: `pulldown-cmark = "0.13.6"`,
+  without its HTML writer.
 - Add the pure, cacheable `digest()` endpoint at `urn:iki:fn:digest`, using core's
   BLAKE3 content identity for exact UTF-8 text. Include shared vectors for ports.
 
