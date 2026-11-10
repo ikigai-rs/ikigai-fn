@@ -66,6 +66,14 @@
 //! And the table is read only from its declaration resource, under the capability the host
 //! hands `DynamicSpace::refresh`: no request argument reaches it.
 //!
+//! # What a short name stands for ([`prefix_expand`])
+//!
+//! A composer that stores a name (an element's `kind`, rendered outside the corridor; a
+//! screen reference it checks for cycles) needs the full name a short one resolves to.
+//! [`prefix_expand`] reads the tables bound into the corridors of a [`Scope`] and walks
+//! them with core's own rewrite ([`AliasTable::canonicalize`]), so there is one
+//! implementation of the rules: the one resolution uses.
+//!
 //! # Changing the table
 //!
 //! A write to the declaration is a cut of its golden thread. The host's loop
@@ -75,7 +83,10 @@
 
 use std::sync::Arc;
 
-use ikigai_core::{DynamicSpace, Iri, Registry, ResolveAt, SpaceCheck, SpaceKind, Topology};
+use ikigai_core::{
+    AliasTable, Canonical, DynamicSpace, Iri, Registry, ResolveAt, Scope, SpaceCheck, SpaceKind,
+    Topology,
+};
 
 /// The schemes a prefix may not be declared under: the kernel's own (`urn`) and the ones
 /// the web and a host's files are named with. A prefix under one of them could match a
@@ -134,6 +145,109 @@ pub fn prefix_check() -> SpaceCheck {
         let verdict = check(&topology);
         Box::pin(async move { verdict })
     })
+}
+
+/// **The name `name` stands for inside `scope`**: the full name the prefix tables in force
+/// in its corridors rewrite it to, or `name` itself when none does. `None` when the
+/// corridors refuse it (a cycle, an over-long chain, a rewrite that is not an IRI): the
+/// kernel refuses that request too, so there is no name to store.
+///
+/// The tables read are the ones [`prefix_space`] has BOUND (a refused table never binds,
+/// so it never expands), each passing [`prefix_check`] again here, and the rewrite is
+/// core's ([`AliasTable::canonicalize`]) over the rules as the bound space reports them.
+/// Corridors are walked as resolution walks them: innermost first, the first table with
+/// a rule for the name rewriting it, and the rewritten name, re-issued inside the same
+/// corridors, walked again until none rewrites it.
+///
+/// A corridor that is not a prefix table is passed by. ⚠ So a corridor ahead that binds
+/// a short name itself (a door at `ui:row`) would answer a request this function expands;
+/// a prefix table can never be such a corridor.
+///
+/// ```
+/// use std::sync::Arc;
+/// use futures::executor::block_on;
+/// use ikigai_core::{Iri, Kernel, Scope, Space};
+///
+/// let table = r#"
+/// @prefix ik: <https://ikigai-rs.dev/ns#> .
+/// @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+/// <urn:example:p> a ik:Alias ; ik:maxHops 8 ;
+///     ik:rewrites <urn:example:p:rule:1> ; ik:space <urn:example:p:space> .
+/// <urn:example:p:rule:1> a ik:RewriteRule ; ik:ruleKind "prefix" ;
+///     ik:logical "ui:" ; ik:canonical "urn:example:ui:" ; ik:resolveAt "root" .
+/// <urn:example:p:space> a ik:EndpointSpace ; ik:doors rdf:nil .
+/// "#;
+/// let kernel = Kernel::new(Arc::new(ikigai_fn::space()));
+/// let prefixes = Arc::new(ikigai_fn::prefix_space("demo", Iri::parse("urn:example:p").unwrap()));
+/// block_on(prefixes.install(&kernel, table)).unwrap();
+/// let inside = Scope::empty().with(prefixes as Arc<dyn Space>);
+///
+/// let row = Iri::parse("ui:row").unwrap();
+/// assert_eq!(
+///     ikigai_fn::prefix_expand(&inside, &row).unwrap().as_str(),
+///     "urn:example:ui:row"
+/// );
+/// // Outside the corridor the name is only what it says.
+/// assert_eq!(ikigai_fn::prefix_expand(&Scope::empty(), &row), Some(row));
+/// ```
+pub fn prefix_expand(scope: &Scope, name: &Iri) -> Option<Iri> {
+    // Innermost first: `spaces()` lists the most recently injected last.
+    let tables: Vec<AliasTable> = scope
+        .spaces()
+        .iter()
+        .rev()
+        .filter_map(|space| bound_table(&space.topology()))
+        .collect();
+    // Each table bounds its own chain; a chain across tables gets their sum.
+    let budget: usize = tables.iter().map(AliasTable::max_hops).sum();
+    let mut current = name.clone();
+    let mut trail = vec![current.clone()];
+    'walk: for _ in 0..budget {
+        for table in &tables {
+            match table.canonicalize(&current) {
+                Canonical::Direct => continue,
+                Canonical::Aliased(hop) => {
+                    let next = hop.canonical().clone();
+                    if trail.contains(&next) {
+                        return None;
+                    }
+                    trail.push(next.clone());
+                    current = next;
+                    continue 'walk;
+                }
+                _ => return None,
+            }
+        }
+        return Some(current);
+    }
+    if tables.is_empty() {
+        Some(current)
+    } else {
+        None
+    }
+}
+
+/// The table a bound prefix space holds: its topology is `ik:DynamicSpace` over the
+/// `ik:Alias` in force, which must pass [`prefix_check`]'s rules. Anything else (an unbound
+/// space, a space that is not a prefix table) holds none.
+fn bound_table(topology: &Topology) -> Option<AliasTable> {
+    let SpaceKind::Dynamic { .. } = &topology.kind else {
+        return None;
+    };
+    let [alias] = topology.children.as_slice() else {
+        return None;
+    };
+    check(alias).ok()?;
+    let SpaceKind::Alias { rules, max_hops } = &alias.kind else {
+        return None;
+    };
+    rules
+        .iter()
+        .try_fold(AliasTable::new(), |table, rule| {
+            table.with_rule(rule.clone())
+        })
+        .ok()
+        .map(|table| table.with_max_hops(*max_hops))
 }
 
 fn check(topology: &Topology) -> std::result::Result<(), String> {

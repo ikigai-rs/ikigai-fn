@@ -189,6 +189,12 @@ names things with (`urn`, `http`, `https`, `file`, `data` and the rest of
 `RESERVED_SCHEMES`). A prefix grants nothing: the rewritten name is issued under the
 caller's own capability. `tests/prefixes.rs` holds the whole example.
 
+To store the full name a short one stands for (a name rendered outside the corridor,
+say), ask `prefix_expand(&scope, &name)`: `Some(urn:example:ui:row)` for `ui:row`
+inside the corridor, the name itself when no table in force rewrites it, and `None`
+when the corridors refuse it. It reads the tables the scope's prefix spaces have bound
+and rewrites with core's own alias walk, so it cannot disagree with resolution.
+
 ## Escaping and links: `ikigai_fn::html`
 
 Shared HTML escaping and link rules apply wherever markup is built from data, so a
