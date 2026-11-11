@@ -507,3 +507,222 @@ fn prefix_expand_walks_every_corridor_as_resolution_does() {
         text(&f.kernel, "urn:example:ui:row").unwrap()
     );
 }
+
+#[test]
+fn overlapping_prefixes_are_refused_at_bind() {
+    let f = fixture(RULES);
+    let err = block_on(f.prefixes.install(
+        &f.kernel,
+        &table(&[("ui:", "urn:example:ui:"), ("ui:row", "urn:example:other:")]),
+    ))
+    .expect_err("overlapping prefixes must not bind");
+    assert!(err.to_string().contains("overlap"), "{err}");
+    assert_eq!(f.prefixes.status().installs, 1);
+}
+
+#[test]
+fn duplicate_prefixes_are_refused_at_bind() {
+    let f = fixture(RULES);
+    let err = block_on(f.prefixes.install(
+        &f.kernel,
+        &table(&[("ui:", "urn:example:ui:"), ("ui:", "urn:example:other:")]),
+    ))
+    .expect_err("duplicate prefixes must not bind");
+    assert!(err.to_string().contains("duplicate"), "{err}");
+    assert_eq!(f.prefixes.status().installs, 1);
+}
+
+#[test]
+fn malformed_prefixes_are_refused_with_a_reason() {
+    let f = fixture(RULES);
+    for (from, to, reason) in [
+        ("", "urn:example:ui:", "scheme"),
+        ("ui:", "relative", "IRI"),
+        ("ui:", "", "IRI"),
+    ] {
+        let err = block_on(f.prefixes.install(&f.kernel, &table(&[(from, to)])))
+            .expect_err("malformed prefixes must not bind");
+        assert!(err.to_string().contains(reason), "{err}");
+    }
+    assert_eq!(f.prefixes.status().installs, 1);
+}
+
+#[test]
+fn only_plain_prefix_rules_can_bind() {
+    let f = fixture(RULES);
+    let exact = table(&[("ui:row", "urn:example:ui:row")])
+        .replace("ik:ruleKind \"prefix\"", "ik:ruleKind \"exact\"");
+    let named = table(&[("ui:", "urn:example:ui:")]).replace(
+        "ik:resolveAt \"root\"",
+        "ik:verb \"Source\" ; ik:resolveAt \"root\"",
+    );
+    for declaration in [named, exact] {
+        let err = block_on(f.prefixes.install(&f.kernel, &declaration))
+            .expect_err("a prefix table only renames a prefix, without request parts");
+        assert!(err.to_string().contains("plain prefix"), "{err}");
+    }
+    assert_eq!(f.prefixes.status().installs, 1);
+}
+
+#[test]
+fn expansion_does_not_overflow_large_declared_hop_budgets() {
+    let f = fixture(RULES);
+    let declaration = table(&[("x:", "urn:example:ui:")])
+        .replace("ik:maxHops 8", &format!("ik:maxHops {}", usize::MAX));
+    let huge = Arc::new(prefix_space("huge", iri("urn:example:huge")));
+    block_on(huge.install(&f.kernel, &declaration)).unwrap();
+    let scope = f.inside().with(huge as Arc<dyn Space>);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&scope, &iri("x:row")),
+        Some(iri("urn:example:ui:row"))
+    );
+}
+
+#[test]
+fn expansion_refuses_a_name_answered_by_an_earlier_non_prefix_corridor() {
+    let f = fixture(RULES);
+    let doors = Arc::new(EndpointSpace::new().bind(Exact::new("ui:row"), html("corridor row")));
+    let scope = f.inside().with(doors as Arc<dyn Space>);
+    let short = block_on(f.kernel.issue_in(
+        source_request("ui:row", &[]),
+        &Capability::root(),
+        scope.clone(),
+    ))
+    .unwrap();
+    assert_eq!(short.bytes, b"corridor row");
+    assert_ne!(
+        short.bytes,
+        text(&f.kernel, "urn:example:ui:row").unwrap().as_bytes()
+    );
+    // There is no table-derived full name for this corridor's own answer.
+    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("ui:row")), None);
+}
+
+#[test]
+fn expansion_stops_at_the_default_kernel_nesting_bound() {
+    let f = fixture(RULES);
+    let mut scope = Scope::empty();
+    for i in 0..=ikigai_core::DEFAULT_MAX_DEPTH {
+        let from = format!("p{i}:");
+        let to = if i == ikigai_core::DEFAULT_MAX_DEPTH {
+            "urn:example:ui:".to_string()
+        } else {
+            format!("p{}:", i + 1)
+        };
+        let prefixes = Arc::new(prefix_space(
+            &format!("depth-{i}"),
+            iri("urn:example:depth"),
+        ));
+        block_on(prefixes.install(&f.kernel, &table(&[(&from, &to)]))).unwrap();
+        scope = scope.with(prefixes as Arc<dyn Space>);
+    }
+    let err = block_on(f.kernel.issue_in(
+        source_request("p0:row", &[]),
+        &Capability::root(),
+        scope.clone(),
+    ))
+    .unwrap_err();
+    assert!(matches!(err, Error::DepthExceeded { .. }), "{err}");
+    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("p0:row")), None);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&scope, &iri("p1:row")),
+        Some(iri("urn:example:ui:row"))
+    );
+}
+
+#[test]
+fn terminating_revisits_are_not_limited_by_the_sum_of_table_budgets() {
+    let f = fixture(&[("a:x:", "b:"), ("a:row", "urn:example:ui:row")]);
+    let back = Arc::new(prefix_space("consume", iri("urn:example:consume")));
+    block_on(back.install(&f.kernel, &table(&[("b:", "a:")]))).unwrap();
+    let scope = f.inside().with(back as Arc<dyn Space>);
+    let name = format!("a:{}row", "x:".repeat(10));
+    let resolved = block_on(f.kernel.issue_in(
+        source_request(&name, &[]),
+        &Capability::root(),
+        scope.clone(),
+    ))
+    .unwrap();
+    assert_eq!(
+        resolved.bytes,
+        text(&f.kernel, "urn:example:ui:row").unwrap().as_bytes()
+    );
+    assert_eq!(
+        ikigai_fn::prefix_expand(&scope, &iri(&name)),
+        Some(iri("urn:example:ui:row"))
+    );
+}
+
+#[test]
+fn a_prefix_must_itself_be_an_absolute_iri() {
+    let f = fixture(RULES);
+    let err = block_on(
+        f.prefixes
+            .install(&f.kernel, &table(&[("ui:bad space", "urn:example:ui:")])),
+    )
+    .expect_err("a prefix containing a space must not bind");
+    assert!(err.to_string().contains("IRI"), "{err}");
+    assert_eq!(f.prefixes.status().installs, 1);
+}
+
+#[test]
+fn prefix_check_validates_expansion_iris_without_relying_on_install() {
+    for target in ["relative", "", "urn:bad space"] {
+        let topology = Alias::new(
+            Arc::new(AliasTable::new().prefix_at_root("ui:", target)),
+            Arc::new(EndpointSpace::new()),
+        )
+        .topology();
+        let err = block_on(ikigai_fn::prefix_check()(topology))
+            .expect_err("the public check must refuse a non-IRI expansion");
+        assert!(err.contains("IRI"), "{err}");
+    }
+}
+
+#[test]
+fn compose_over_sources_a_short_template_and_inherits_prefixes_in_its_markers() {
+    let root = ikigai_fn::space()
+        .bind(
+            Exact::new("urn:example:template"),
+            html("<$h{fn:toUpper?in=roc}>"),
+        )
+        .bind(
+            Exact::new("urn:example:view"),
+            ikigai_fn::compose_over(iri("ui:template")),
+        );
+    let kernel = Kernel::new(Arc::new(root));
+    let prefixes = Arc::new(prefix_space("compose-over", iri("urn:example:prefixes")));
+    block_on(prefixes.install(
+        &kernel,
+        &table(&[("ui:", "urn:example:"), ("fn:", "urn:iki:fn:")]),
+    ))
+    .unwrap();
+    let result = block_on(kernel.issue_in(
+        source_request("urn:example:view", &[]),
+        &Capability::root(),
+        Scope::empty().with(prefixes as Arc<dyn Space>),
+    ))
+    .unwrap();
+    assert_eq!(result.bytes, b"<ROC>");
+    assert!(issue(&kernel, source_request("urn:example:view", &[])).is_err());
+}
+
+#[test]
+fn an_inner_prefix_table_wins_over_an_outer_table_for_the_same_name() {
+    let f = fixture(&[("ui:", "urn:example:wrong:")]);
+    let inner = Arc::new(prefix_space("inner", iri("urn:example:inner")));
+    block_on(inner.install(&f.kernel, &table(&[("ui:", "urn:example:ui:")]))).unwrap();
+    let scope = f.inside().with(inner as Arc<dyn Space>);
+    let resolved = block_on(f.kernel.issue_in(
+        source_request("ui:row", &[]),
+        &Capability::root(),
+        scope.clone(),
+    ))
+    .unwrap();
+    let expanded = ikigai_fn::prefix_expand(&scope, &iri("ui:row")).unwrap();
+    assert_eq!(expanded, iri("urn:example:ui:row"));
+    assert_eq!(
+        resolved.bytes,
+        text(&f.kernel, expanded.as_str()).unwrap().as_bytes()
+    );
+}
