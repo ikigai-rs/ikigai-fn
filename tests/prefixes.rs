@@ -384,3 +384,126 @@ fn changing_the_table_recomputes_what_was_composed_with_it() {
         "{err:?}"
     );
 }
+
+/// The outline compiler's need (ledger #3377): a composition writes `ui:row`, and must
+/// STORE the name that stands for — a face renders outside the corridor, where `ui:row`
+/// does not exist. `prefix_expand` names what the corridor resolves the short name to, by
+/// the table in force, and the full name answers what the short one did, with no corridor.
+#[test]
+fn prefix_expand_names_what_a_short_name_stands_for() {
+    let f = fixture(RULES);
+    let expanded = ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")).unwrap();
+    assert_eq!(expanded, iri("urn:example:ui:row"));
+    let short = f
+        .issue_inside(source_request("ui:row", &[]), &Capability::root())
+        .unwrap();
+    assert_eq!(text(&f.kernel, expanded.as_str()).unwrap(), short);
+    // A screen reference hidden by a prefix is recognizable once expanded.
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.inside(), &iri("page:screen:name:home")).unwrap(),
+        iri("urn:example:data:screen:name:home")
+    );
+    // A full name, or one under no declared prefix, stands as written.
+    for name in ["urn:example:ui:row", "evil:secret", "urn:kernel:topology"] {
+        assert_eq!(
+            ikigai_fn::prefix_expand(&f.inside(), &iri(name)),
+            Some(iri(name))
+        );
+    }
+    // Outside the corridor nothing expands: there `ui:row` is only `ui:row`.
+    assert_eq!(
+        ikigai_fn::prefix_expand(&Scope::empty(), &iri("ui:row")),
+        Some(iri("ui:row"))
+    );
+}
+
+#[test]
+fn prefix_expand_follows_the_table_in_force_and_ignores_a_refused_one() {
+    let f = fixture(RULES);
+    let moved: Vec<(&str, &str)> = RULES
+        .iter()
+        .map(|&(from, to)| {
+            if from == "ui:" {
+                (from, "urn:example:elsewhere:")
+            } else {
+                (from, to)
+            }
+        })
+        .collect();
+    sink(&f.kernel, "urn:example:store:prefixes", &table(&moved)).unwrap();
+    block_on(f.prefixes.refresh(&f.kernel, &Capability::root())).unwrap();
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")),
+        Some(iri("urn:example:elsewhere:row"))
+    );
+    // A refused table never binds, so it never expands: the one in force still does.
+    sink(
+        &f.kernel,
+        "urn:example:store:prefixes",
+        &table(&[("ui:", "urn:example:x:"), ("urn:", "urn:example:")]),
+    )
+    .unwrap();
+    assert!(block_on(f.prefixes.refresh(&f.kernel, &Capability::root())).is_err());
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")),
+        Some(iri("urn:example:elsewhere:row"))
+    );
+    // A space that is not a prefix table (here, the host itself as a corridor) expands nothing.
+    let held = Arc::new(Mutex::new(BTreeMap::new()));
+    let doors = Scope::empty().with(Arc::new(host(held)) as Arc<dyn Space>);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&doors, &iri("ui:row")),
+        Some(iri("ui:row"))
+    );
+}
+
+/// Expansion and resolution agree where a name does not resolve. Core refuses a cyclic
+/// table at bind, but two corridors can still form a cycle between them (`a:` → `b:` in one,
+/// `b:` → `a:` in the other): that expands to nothing, never to whichever name the walk
+/// stopped on, and the request fails too.
+#[test]
+fn prefix_expand_refuses_what_resolution_refuses() {
+    let f = fixture(&[("a:", "b:")]);
+    sink(&f.kernel, "urn:example:store:back", &table(&[("b:", "a:")])).unwrap();
+    let back = Arc::new(prefix_space("back", iri("urn:example:store:back")));
+    block_on(back.refresh(&f.kernel, &Capability::root())).unwrap();
+    let scope = f.inside().with(back as Arc<dyn Space>);
+    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("a:x")), None);
+    assert!(block_on(
+        f.kernel
+            .issue_in(source_request("a:x", &[]), &Capability::root(), scope)
+    )
+    .is_err());
+}
+
+/// Two prefix corridors: the name the first rewrites is re-issued inside both, so the second
+/// may rewrite it again; the innermost corridor is consulted first.
+#[test]
+fn prefix_expand_walks_every_corridor_as_resolution_does() {
+    let f = fixture(RULES);
+    sink(
+        &f.kernel,
+        "urn:example:store:outer",
+        &table(&[("x:", "ui:")]),
+    )
+    .unwrap();
+    let outer = Arc::new(prefix_space("outer", iri("urn:example:store:outer")));
+    block_on(outer.refresh(&f.kernel, &Capability::root())).unwrap();
+    let scope = Scope::empty()
+        .with(outer as Arc<dyn Space>)
+        .with(Arc::clone(&f.prefixes) as Arc<dyn Space>);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&scope, &iri("x:row")),
+        Some(iri("urn:example:ui:row"))
+    );
+    let short = block_on(f.kernel.issue_in(
+        source_request("x:row", &[]),
+        &Capability::root(),
+        scope,
+    ))
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(short.bytes).unwrap(),
+        text(&f.kernel, "urn:example:ui:row").unwrap()
+    );
+}

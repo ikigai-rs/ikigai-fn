@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (ledger #3377)
+
+- Add `prefix_expand(&Scope, &Iri) -> Option<Iri>`: the full name a short one stands for
+  inside a scope's prefix corridors, so a composition can store the canonical name. It reads
+  the tables `prefix_space` has bound (each passing `prefix_check`) and rewrites with core's
+  `AliasTable::canonicalize`, so there is one implementation of the rules. `None` when the
+  corridors refuse the name, as resolution does.
+
 ## 0.11.0 (ledger #3280)
 
 - Add `ikigai_fn::markdown`: `render_untrusted` and `try_render_untrusted` turn Markdown from

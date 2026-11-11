@@ -17,7 +17,7 @@ pub mod html;
 pub mod markdown;
 pub mod prefix;
 
-pub use prefix::{prefix_check, prefix_space, RESERVED_SCHEMES};
+pub use prefix::{prefix_check, prefix_expand, prefix_space, RESERVED_SCHEMES};
 
 use std::future::Future;
 use std::pin::Pin;
