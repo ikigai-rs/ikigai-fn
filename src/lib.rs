@@ -21,6 +21,7 @@ pub use prefix::{prefix_check, prefix_expand, prefix_space, RESERVED_SCHEMES};
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use futures_util::future::try_join_all;
@@ -332,6 +333,17 @@ pub fn echo() -> FnEndpoint {
 /// itself, directly or through a cycle.
 const COMPOSE_MAX_DEPTH: usize = 32;
 
+/// Maximum literal and marker nodes produced by one template fill, including every
+/// recursive `$a` expansion. Repeated uses count again even when their resource is
+/// cached. Each element of `each` is a separate fill.
+pub const COMPOSE_MAX_NODES: usize = 10_000;
+
+fn compose_node_limit() -> Error {
+    Error::Endpoint(format!(
+        "compose: node limit ({COMPOSE_MAX_NODES}, COMPOSE_MAX_NODES) exceeded"
+    ))
+}
+
 /// `compose`: a request-template language — NetKernel's TRL, resolved through the
 /// kernel.
 ///
@@ -387,6 +399,12 @@ const COMPOSE_MAX_DEPTH: usize = 32;
 /// is how a template opts in to recursion, and it re-expands EVERYTHING it splices —
 /// including the output of a nested `compose`, whose `$$` escapes have already
 /// collapsed to `$`. Splice a composed view with `$r`.
+///
+/// **Bounds.** A fill permits at most 32 template levels and [`COMPOSE_MAX_NODES`]
+/// literal/marker nodes across all `$a` expansions. Each occurrence counts, including
+/// cached resources and argument splices. Exceeding either limit returns
+/// [`Error::Endpoint`]; a node-limit failure cannot be hidden by a fallback. These are
+/// bounds on this fill; requests to other composers also have the kernel's limits.
 ///
 /// **Template arguments.** Every argument of the request other than `src` — and, for
 /// [`compose_over`], every variable its name captured, which wins over an argument of
@@ -1396,7 +1414,7 @@ impl Marker {
 /// `$` (so `$$a{…}` becomes the literal text `$a{…}`); `$a{ … }`, `$r{ … }` and
 /// `$h{ … }` become markers holding their trimmed body; an unterminated marker stays
 /// literal.
-fn scan(text: &str) -> Vec<Segment> {
+fn scan(text: &str, nodes: &AtomicUsize) -> Result<Vec<Segment>> {
     let b = text.as_bytes();
     let mut segments = Vec::new();
     let mut lit = String::new();
@@ -1413,10 +1431,10 @@ fn scan(text: &str) -> Vec<Segment> {
                 let brace = i + 2;
                 if let Some(close) = find_marker_end(text, brace) {
                     if !lit.is_empty() {
-                        segments.push(Segment::Lit(std::mem::take(&mut lit)));
+                        push_segment(&mut segments, Segment::Lit(std::mem::take(&mut lit)), nodes)?;
                     }
                     let body = text[brace + 1..close].trim().to_string();
-                    segments.push(Segment::Marker(mode, body));
+                    push_segment(&mut segments, Segment::Marker(mode, body), nodes)?;
                     i = close + 1;
                     continue;
                 }
@@ -1428,9 +1446,19 @@ fn scan(text: &str) -> Vec<Segment> {
         i += len;
     }
     if !lit.is_empty() {
-        segments.push(Segment::Lit(lit));
+        push_segment(&mut segments, Segment::Lit(lit), nodes)?;
     }
-    segments
+    Ok(segments)
+}
+
+/// Charge produced nodes before parsing or resolving their markers. This counter is
+/// shared by sibling expansions, not by resource names or cache entries.
+fn push_segment(segments: &mut Vec<Segment>, segment: Segment, nodes: &AtomicUsize) -> Result<()> {
+    if nodes.fetch_add(1, Ordering::Relaxed) >= COMPOSE_MAX_NODES {
+        return Err(compose_node_limit());
+    }
+    segments.push(segment);
+    Ok(())
 }
 
 /// Expand every marker in `text`. The `a` is for *asynchronous*: the first alternative
@@ -1447,12 +1475,31 @@ fn expand<'a>(
     depth: usize,
 ) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
     Box::pin(async move {
+        let nodes = AtomicUsize::new(0);
+        let result = expand_counted(inv, args, text, depth, &nodes).await;
+        // A per-marker fallback must not turn exhaustion of the shared budget into
+        // a successful (and potentially scheduling-dependent) partial answer.
+        if nodes.load(Ordering::Relaxed) > COMPOSE_MAX_NODES {
+            return Err(compose_node_limit());
+        }
+        result
+    })
+}
+
+fn expand_counted<'a>(
+    inv: &'a Invocation<'_>,
+    args: Args<'a>,
+    text: String,
+    depth: usize,
+    nodes: &'a AtomicUsize,
+) -> Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>> {
+    Box::pin(async move {
         if depth >= COMPOSE_MAX_DEPTH {
             return Err(Error::Endpoint(format!(
                 "compose: recursion limit ({COMPOSE_MAX_DEPTH}) exceeded — cyclic transclusion?"
             )));
         }
-        let segments = scan(&text);
+        let segments = scan(&text, nodes)?;
         // This level's markers, in document order. One that cannot be parsed is the
         // template's fault, and fails the whole compose whatever fallbacks it names.
         let markers = segments
@@ -1508,7 +1555,7 @@ fn expand<'a>(
                 let mut result = match first {
                     First::Local(value) => value.map(|value| splice_value(marker.mode, value)),
                     First::Resolved(Ok(repr)) => {
-                        splice(inv, args, marker.mode, &marker.body, repr, depth).await
+                        splice(inv, args, marker.mode, &marker.body, repr, depth, nodes).await
                     }
                     First::Resolved(Err(e)) => Err(e),
                 };
@@ -1516,7 +1563,7 @@ fn expand<'a>(
                     if result.is_ok() {
                         break;
                     }
-                    result = evaluate(inv, args, marker, alt, depth).await;
+                    result = evaluate(inv, args, marker, alt, depth, nodes).await;
                 }
                 result
             });
@@ -1551,13 +1598,14 @@ async fn evaluate(
     marker: &Marker,
     alt: &Alt,
     depth: usize,
+    nodes: &AtomicUsize,
 ) -> Result<String> {
     match alt {
         Alt::Arg(name) => Ok(splice_value(marker.mode, template_arg(inv, args, name)?)),
         alt => {
             let request = alt_request(inv, args, &marker.body, alt)?;
             let repr = inv.issue(request).await?;
-            splice(inv, args, marker.mode, &marker.body, repr, depth).await
+            splice(inv, args, marker.mode, &marker.body, repr, depth, nodes).await
         }
     }
 }
@@ -1570,9 +1618,10 @@ async fn splice(
     body: &str,
     repr: Representation,
     depth: usize,
+    nodes: &AtomicUsize,
 ) -> Result<String> {
     match (mode, String::from_utf8(repr.bytes)) {
-        (Mode::Transclude, Ok(text)) => expand(inv, args, text, depth + 1).await,
+        (Mode::Transclude, Ok(text)) => expand_counted(inv, args, text, depth + 1, nodes).await,
         (Mode::Raw, Ok(text)) => Ok(text),
         (Mode::Html | Mode::Jq, Ok(text)) => Ok(html::html_text(&text)),
         // A value spliced into HTML must be text: a placeholder here would be escaped
@@ -1615,7 +1664,7 @@ fn template_arg(inv: &Invocation<'_>, args: Args<'_>, name: &str) -> Result<Stri
 }
 
 /// The index of the `}` closing the marker whose `{` is at `brace`, skipping any
-/// `}` inside a `"…"` span (where `\"` and `\\` are escapes) and any that closes a
+/// `}` inside a `"…"` span (where a backslash escapes the next character) and any that closes a
 /// `{name}` argument inside the body. `None` if unterminated.
 fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
     let b = text.as_bytes();
@@ -1624,7 +1673,12 @@ fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
     let mut depth = 0usize;
     while i < b.len() {
         match b[i] {
-            b'\\' if in_quote => i += 2,
+            b'\\' if in_quote => {
+                i += 1;
+                if i < b.len() {
+                    i += utf8_len(b[i]);
+                }
+            }
             b'"' => {
                 in_quote = !in_quote;
                 i += 1;

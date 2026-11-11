@@ -523,3 +523,57 @@ fn an_ampersand_in_a_quoted_value_is_part_of_the_value() {
     let kernel = kernel_with(r#"$a{urn:iki:fn:toUpper?in="fish & chips"}"#, base());
     assert_eq!(page(&kernel).unwrap(), "FISH & CHIPS");
 }
+
+/// Quoted escapes consume a character, including a multibyte UTF-8 character.
+#[test]
+fn quoted_unicode_escape_does_not_hide_the_marker_end() {
+    for (template, expected) in [
+        (
+            r#"before $h{urn:iki:fn:toUpper?in="\é"} after"#,
+            "before É after",
+        ),
+        (
+            r#"before $h{urn:iki:fn:toUpper?in="\中"} after"#,
+            "before 中 after",
+        ),
+        (
+            r#"before $h{urn:iki:fn:toUpper?in="\🦀"} after"#,
+            "before 🦀 after",
+        ),
+    ] {
+        let kernel = kernel_with(template, base());
+        assert_eq!(page(&kernel).unwrap(), expected);
+    }
+}
+
+/// A shallow DAG can produce many nodes even when it reads very few resources.
+#[test]
+fn recursive_expansion_bounds_produced_nodes_not_unique_reads() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mut space = base();
+    for level in 0..=14 {
+        let body = if level == 14 {
+            "x".to_string()
+        } else {
+            format!(
+                "$a{{urn:example:level:{}}}$a{{urn:example:level:{}}}",
+                level + 1,
+                level + 1
+            )
+        };
+        let reads = Arc::clone(&reads);
+        space = space.bind(
+            Exact::new(format!("urn:example:level:{level}")),
+            FnEndpoint::new("level", move |_: &Invocation<'_>| {
+                reads.fetch_add(1, Ordering::SeqCst);
+                Ok(Representation::new(text_html(), body.as_bytes().to_vec()).cacheable())
+            }),
+        );
+    }
+    let kernel = kernel_with("$a{urn:example:level:0}", space);
+    assert!(matches!(page(&kernel), Err(Error::Endpoint(detail)) if detail.contains("node limit")));
+    assert!(
+        reads.load(Ordering::SeqCst) <= 15,
+        "cached reads are not a work bound"
+    );
+}
