@@ -48,6 +48,8 @@
 //!   mounts: a table can rewrite names and do nothing else);
 //! - a rule that does not resolve from the root (a child rule over an empty space resolves
 //!   nothing, so it can only be a mistake);
+//! - anything but plain prefix rules with absolute IRI prefixes and expansions, or
+//!   duplicate or overlapping prefixes;
 //! - a rule whose name is under a scheme the kernel and the web use
 //!   ([`RESERVED_SCHEMES`]: `urn`, `http`, `https`, `file` and the rest). A host's names
 //!   live under those, so a prefix can never match one.
@@ -84,8 +86,8 @@
 use std::sync::Arc;
 
 use ikigai_core::{
-    AliasTable, Canonical, DynamicSpace, Iri, Registry, ResolveAt, Scope, SpaceCheck, SpaceKind,
-    Topology,
+    AliasTable, Canonical, DynamicSpace, Iri, Registry, Request, Resolution, ResolveAt, RuleKind,
+    Scope, SpaceCheck, SpaceKind, Topology, Verb, DEFAULT_MAX_DEPTH,
 };
 
 /// The schemes a prefix may not be declared under: the kernel's own (`urn`) and the ones
@@ -138,8 +140,9 @@ pub fn prefix_space(name: &str, declaration: Iri) -> DynamicSpace {
 }
 
 /// The check a prefix table must pass before it binds: one `ik:Alias` of root-resolving
-/// rules, none under a [reserved scheme](RESERVED_SCHEMES), over an empty space. See the
-/// [module docs](self).
+/// plain prefix rules with absolute IRI prefixes and expansions, no duplicates or
+/// overlaps, none under a [reserved scheme](RESERVED_SCHEMES), over an empty space.
+/// See the [module docs](self).
 pub fn prefix_check() -> SpaceCheck {
     Arc::new(|topology: Topology| {
         let verdict = check(&topology);
@@ -149,8 +152,8 @@ pub fn prefix_check() -> SpaceCheck {
 
 /// **The name `name` stands for inside `scope`**: the full name the prefix tables in force
 /// in its corridors rewrite it to, or `name` itself when none does. `None` when the
-/// corridors refuse it (a cycle, an over-long chain, a rewrite that is not an IRI): the
-/// kernel refuses that request too, so there is no name to store.
+/// corridors refuse it (a cycle, an over-long chain, a rewrite that is not an IRI), or
+/// when a corridor's answer cannot be described by a prefix table. See the bounds below.
 ///
 /// The tables read are the ones [`prefix_space`] has BOUND (a refused table never binds,
 /// so it never expands), each passing [`prefix_check`] again here, and the rewrite is
@@ -159,9 +162,14 @@ pub fn prefix_check() -> SpaceCheck {
 /// a rule for the name rewriting it, and the rewritten name, re-issued inside the same
 /// corridors, walked again until none rewrites it.
 ///
-/// A corridor that is not a prefix table is passed by. ⚠ So a corridor ahead that binds
-/// a short name itself (a door at `ui:row`) would answer a request this function expands;
-/// a prefix table can never be such a corridor.
+/// A corridor that is not a prefix table is probed for a `Source` request. If it answers,
+/// expansion returns `None`: its answer has no full name established by these tables.
+/// A corridor that misses is passed by. No endpoint is invoked. This function describes
+/// source names; a corridor may route other verbs differently.
+///
+/// At most [`DEFAULT_MAX_DEPTH`] root reissues are expanded, matching the default kernel
+/// nesting bound. A kernel with a larger bound may resolve a name this function refuses;
+/// the scope alone does not carry a kernel's configured or remaining nesting budget.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -191,22 +199,34 @@ pub fn prefix_check() -> SpaceCheck {
 /// assert_eq!(ikigai_fn::prefix_expand(&Scope::empty(), &row), Some(row));
 /// ```
 pub fn prefix_expand(scope: &Scope, name: &Iri) -> Option<Iri> {
-    // Innermost first: `spaces()` lists the most recently injected last.
-    let tables: Vec<AliasTable> = scope
+    // Keep opaque corridors in order: dropping one can invent a name for a different answer.
+    let corridors: Vec<_> = scope
         .spaces()
         .iter()
         .rev()
-        .filter_map(|space| bound_table(&space.topology()))
+        .map(|space| (space, bound_table(&space.topology())))
         .collect();
-    // Each table bounds its own chain; a chain across tables gets their sum.
-    let budget: usize = tables.iter().map(AliasTable::max_hops).sum();
+    // A table can be revisited with a different name; its hop budget applies to each
+    // canonicalization, not to the number of root reissues across the whole scope.
+    let budget = DEFAULT_MAX_DEPTH as usize;
     let mut current = name.clone();
     let mut trail = vec![current.clone()];
-    'walk: for _ in 0..budget {
-        for table in &tables {
+    // Include a terminal probe after the last allowed rewrite.
+    'walk: for rewritten in 0..=budget {
+        for (space, table) in &corridors {
+            let Some(table) = table else {
+                let request = Request::new(Verb::Source, current.clone());
+                if matches!(space.resolve(&request, scope), Resolution::Hit(_)) {
+                    return None;
+                }
+                continue;
+            };
             match table.canonicalize(&current) {
                 Canonical::Direct => continue,
                 Canonical::Aliased(hop) => {
+                    if rewritten == budget {
+                        return None;
+                    }
                     let next = hop.canonical().clone();
                     if trail.contains(&next) {
                         return None;
@@ -220,11 +240,7 @@ pub fn prefix_expand(scope: &Scope, name: &Iri) -> Option<Iri> {
         }
         return Some(current);
     }
-    if tables.is_empty() {
-        Some(current)
-    } else {
-        None
-    }
+    None
 }
 
 /// The table a bound prefix space holds: its topology is `ik:DynamicSpace` over the
@@ -271,6 +287,17 @@ fn check(topology: &Topology) -> std::result::Result<(), String> {
         }
     }
     for rule in rules {
+        if rule.kind != RuleKind::Prefix
+            || rule.template
+            || rule.verb.is_some()
+            || !rule.fixes.is_empty()
+            || !rule.inputs.is_empty()
+        {
+            return Err(format!(
+                "prefix `{}` must be a plain prefix rule with no template, bound verb, fixed arguments or declared inputs",
+                rule.from
+            ));
+        }
         if rule.at != ResolveAt::Root {
             return Err(format!(
                 "prefix `{}` must resolve from the root (ik:resolveAt \"root\"): over an empty \
@@ -297,6 +324,30 @@ fn check(topology: &Topology) -> std::result::Result<(), String> {
                 "prefix `{}` is under the reserved scheme `{scheme}:` — the host's own names \
                  live there, and a prefix may never stand in for one",
                 rule.from
+            ));
+        }
+        Iri::parse(&rule.from)
+            .map_err(|_| format!("prefix `{}` must be an absolute IRI", rule.from))?;
+        Iri::parse(&rule.to).map_err(|_| {
+            format!(
+                "prefix `{}` has expansion `{}`, which must be an absolute IRI",
+                rule.from, rule.to
+            )
+        })?;
+    }
+    // In lexical order a prefix precedes its extensions, so adjacent pairs suffice.
+    let mut prefixes: Vec<_> = rules.iter().map(|rule| rule.from.as_str()).collect();
+    prefixes.sort_unstable();
+    for pair in prefixes.windows(2) {
+        let [previous, current] = pair else {
+            unreachable!()
+        };
+        if current == previous {
+            return Err(format!("prefix `{current}` is a duplicate prefix"));
+        }
+        if current.starts_with(previous) {
+            return Err(format!(
+                "prefixes `{previous}` and `{current}` overlap: one prefix starts with the other"
             ));
         }
     }

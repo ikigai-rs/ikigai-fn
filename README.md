@@ -183,8 +183,9 @@ Inside, `$j{page:people .[0].name}` and
 `$r{fn:each?src=page:rows&template=ui:row}` resolve, and so does the `page:people`
 the jq endpoint is asked to read; outside, the names do not exist. A write to the
 table recomputes what was composed with it. `prefix_check` (which `prefix_space`
-runs on every candidate) refuses a table that is anything but rewrite rules, a
-rule that does not resolve from the root, and a prefix under a scheme the host
+runs on every candidate) requires plain prefix rules with absolute IRI prefixes and
+expansions, without duplicate or overlapping prefixes. It refuses a rule that does
+not resolve from the root, and a prefix under a scheme the host
 names things with (`urn`, `http`, `https`, `file`, `data` and the rest of
 `RESERVED_SCHEMES`). A prefix grants nothing: the rewritten name is issued under the
 caller's own capability. `tests/prefixes.rs` holds the whole example.
@@ -192,8 +193,11 @@ caller's own capability. `tests/prefixes.rs` holds the whole example.
 To store the full name a short one stands for (a name rendered outside the corridor,
 say), ask `prefix_expand(&scope, &name)`: `Some(urn:example:ui:row)` for `ui:row`
 inside the corridor, the name itself when no table in force rewrites it, and `None`
-when the corridors refuse it. It reads the tables the scope's prefix spaces have bound
-and rewrites with core's own alias walk, so it cannot disagree with resolution.
+when the corridors refuse it or an earlier corridor answers the source request itself.
+It reads the bound tables and rewrites with core's own alias walk. Expansion allows at
+most 64 root reissues (the default kernel nesting bound); it cannot account for a custom
+kernel limit or nesting already used by the caller. Other corridors are probed for
+source routing without invoking their endpoints; routing for other verbs may differ.
 
 ## Escaping and links: `ikigai_fn::html`
 
