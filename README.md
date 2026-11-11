@@ -64,13 +64,20 @@ recomputes it.
   user data, a peer, a file — goes in through `$h` (or `$r`) and a marker in it
   is text. `$a` re-expands everything it splices, including a nested compose's
   output: splice a composed view with `$r`.
+- **Bounds.** One template fill permits 32 template levels and at most
+  `COMPOSE_MAX_NODES` (10,000) literal/marker nodes, counting every occurrence
+  across recursive `$a` expansions, including cached resources. Exceeding a
+  limit returns `Error::Endpoint`; a fallback cannot hide node exhaustion.
+  Each `each` element has its own fill budget. These limits count nodes, not
+  output bytes; nested composer requests also have the kernel's limits.
 - **Escaping.** `$h` output is safe in element text and in an attribute quoted
   with either quote. Quote every attribute.
 - **Literal text.** `$$` is a literal `$`. To put arbitrary text into a template
   so that it renders exactly as written, call `escape_markers(text)`;
   `MARKER_LETTERS` lists the letters that open a marker. Both are built from the
   list compose's own scanner reads, so a host that uses them instead of a copy
-  cannot fall behind when compose learns a letter.
+  cannot fall behind when compose learns a letter. Inside a quoted marker value,
+  a backslash escapes the next character, including a Unicode character.
 - **Reference arguments.** An unquoted `<iri>` value, such as
   `$r{urn:iki:fn:toUpper?in=<urn:example:data>}`, is issued as a reference;
   the kernel settles it by the target contract. `{name}` inside `<…>` is
