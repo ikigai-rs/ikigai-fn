@@ -12,7 +12,7 @@ template](https://github.com/mgifford/ACCESSIBILITY.md) (MIT).
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-fn/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-fn/security/advisories/new) |
-| Last reviewed | 2026-11-08 |
+| Last reviewed | 2026-11-13 |
 
 ## What it emits that people read
 
@@ -39,7 +39,7 @@ Not this repository's: every template's markup, and the page a host serves it in
 
 ## The rules that output follows
 
-Verified by reading the source on 2026-10-31:
+Implementation rules; current verification and gaps are recorded below:
 
 - Text from data reaches a page escaped (`&<>"'`), safe in element text and in either-quoted
   attributes; a C0 control other than tab, line feed and carriage return becomes U+FFFD rather
@@ -57,26 +57,40 @@ Verified by reading the source on 2026-10-31:
   refused, naming the marker.
 - An error names what it is about: the endpoint (`compose:`, `each:`, `conditional:`), and the
   marker, argument or IRI.
-- No color, terminal escape or markup of this crate's own is written.
+- Plain-text answers and errors should carry meaning in words. This crate also writes HTML
+  fragments and HTML comments; it does not supply a page layout or color palette.
 
 ## How it is tested
 
-- `tests/html_vectors.rs` runs `tests/vectors/html_vectors.json` against `html_text`, `attr`,
-  `compose`'s `$h`, `url_segment`, `safe_href` and `json_attr`
-  (`html_text_and_attr_match_the_escape_vectors`, `compose_h_escapes_by_the_same_vectors`,
-  `safe_href_matches_the_vectors`, `json_attr_matches_the_vectors` and others).
-- `tests/html_to_text.rs` pins what `to_text` keeps and drops (`markup_is_not_text`,
-  `blocks_separate_words_and_inline_elements_do_not`, `code_and_comments_are_not_text` and
-  others).
-- `tests/markdown.rs` pins each rendering rule with hostile input, checks output with an XML
-  parser, and pins whole documents byte for byte (`raw_html_is_text_never_markup`,
-  `every_other_link_renders_only_its_words`, `a_link_with_no_words_is_labeled_with_its_target`,
-  `every_output_is_well_formed_xml` and others).
-- `tests/escape.rs` pins that escaped template text renders exactly as written.
-- `tests/each.rs` pins that element data reaches the output only escaped
-  (`element_data_is_never_spliced_as_it_is`, `the_separator_goes_between_fills_escaped`).
-- **No automated accessibility checker, browser or assistive technology has been used on this
-  output.**
+Every named check has a result: Pass, Fail or Blocked, with evidence, following
+[gonk-starter PR 91](https://github.com/ikigai-rs/ikigai-gonk-starter/pull/91).
+A Pass covers only the stated check, not overall accessibility. On 2026-11-13 (UTC),
+`cargo test --all-targets` passed on main commit
+`bdf63c198951987ca179f003e4f611c3564381dd`, before this documentation change, using
+Cargo 1.99.1 and rustc 1.99.1. The automated checks below all ran in that command and
+are repeated by the repository's Rust CI. They compare strings, errors and parsed XML;
+they do not render a host page, evaluate its accessibility tree or establish WCAG conformance.
+
+| Check | Result | Evidence |
+|---|---|---|
+| HTML text/attribute escaping, control replacement, URL encoding, safe link targets and JSON attributes | Pass | `tests/html_vectors.rs`, including `html_text_and_attr_match_the_escape_vectors`, `compose_h_escapes_by_the_same_vectors`, `safe_href_matches_the_vectors` and `json_attr_matches_the_vectors`, runs `tests/vectors/html_vectors.json`. Checks helper output, not every caller's use of it. |
+| Rendered Markdown escaping, allowed/refused links, image alternatives and nonempty link labels | Pass | `tests/markdown.rs`: `raw_html_is_text_never_markup`, `the_allowed_links_become_links`, `every_other_link_renders_only_its_words`, `an_image_is_a_link_with_its_alt_text`, `an_image_with_a_refused_target_is_its_alt_text`, `a_link_with_no_words_is_labeled_with_its_target`. Checks emitted strings, not name quality. |
+| Markdown heading offset, labeled disabled task boxes and scoped table headers | Pass | `tests/markdown.rs`: `headings_start_below_the_page`, `heading_offset_moves_them_and_h6_is_the_cap`, `tables_strikethrough_and_task_lists_are_on`. Checks markup, not author heading order or assistive-technology behavior. |
+| Markdown XML structure, document output and refusal notice | Pass | `tests/markdown.rs`: `every_output_is_well_formed_xml` (roxmltree 0.20.0), `an_ordinary_document`, `a_host_rendering_to_a_page_gets_a_notice_for_a_refused_input`. XML validity is not an accessibility audit. |
+| HTML-to-text extraction, word boundaries and removal of code/comments | Pass | `tests/html_to_text.rs`: `markup_is_not_text`, `blocks_separate_words_and_inline_elements_do_not`, `code_and_comments_are_not_text` and remaining tests. Pins current behavior, including loss of image alt text; does not establish equivalent text alternatives. |
+| Literal template marker escaping | Pass | `tests/escape.rs`, including `every_marker_form_survives_compose_when_escaped` and `escaping_is_exact_for_every_run_of_dollars`. Checks preservation of template text. |
+| Escaped element data and separators in each | Pass | `tests/each.rs`: `element_data_is_never_spliced_as_it_is`, `element_data_is_never_reserved_expanded`, `the_separator_goes_between_fills_escaped`. Does not check template markup accessibility. |
+| Typed refusals for malformed markers, non-text input, invalid collections/conditions and prefix tables | Pass | `tests/templates.rs`, `tests/template_audit.rs`, `tests/each.rs`, `tests/prefixes.rs` and `src/lib.rs` unit tests exercise refusals. Checks asserted error types and message fragments, not readability of every message. |
+| Complete error-message readability and meaning without color or terminal escapes | Blocked | No current human review of all messages. Historical source reading on 2026-10-31 is not repeated by CI; debug formatting and backticks remain limitations below. |
+| Template/host language, headings, landmarks, labels and link context | Blocked | No host page was evaluated. These are supplied by callers; helper tests cannot establish their accessibility. |
+| Browser rendering, contrast, zoom/reflow and host content security policy | Blocked | No browser evaluation was run for this update; no host page or browser harness is configured here. The historical source review of inline table alignment on 2026-10-31 is not a browser check. |
+| Manual keyboard navigation and focus | Blocked | No person performed a keyboard pass on a host page; no interactive host session was available for this update. |
+| Automated accessibility checker (axe or equivalent) | Blocked | No automated accessibility checker was run on this output; no browser checker is configured here. Rust tests are not such a checker. |
+| Screen reader | Blocked | No screen reader was used on this output; no screen reader session was available for this update. Task-box labels and table navigation remain unverified. |
+| Screen magnifier | Blocked | No screen magnifier was used on this output; no magnifier session was available for this update. |
+| Speech input | Blocked | No speech-input software was used on this output; no speech-input session was available for this update. |
+| Switch access | Blocked | No switch-access software was used on this output; no switch-access session was available for this update. |
+| Braille display | Blocked | No braille display was used on this output; no braille display was available for this update. |
 
 ## Known limitations
 
@@ -101,7 +115,10 @@ Found by reading the source on 2026-10-31, not by testing:
 Read this file before changing any output listed above: an escaping function, `to_text`, the
 splicing rules or an error message. A change to escaping changes `tests/vectors/html_vectors.json`
 on purpose, and the ports that copy it follow. Keep meaning in words, and say in the pull request
-what was tested and what was not.
+what was tested and what was not. Give each check a row in a Check | Result | Evidence
+table with Pass, Fail or Blocked, its test or command and tool version, or why it could not
+run. Keep unrun checks Blocked, including assistive technologies nobody used. A historical
+run that CI does not repeat is Blocked with its date, not Pass.
 
 ## Reporting a barrier
 
@@ -118,3 +135,4 @@ technology, if you are comfortable sharing them. Anything security-sensitive goe
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-08 | Added rendered Markdown. |
+| 2026-11-13 | Recorded current main test evidence and explicit Blocked checks; clarified output scope. |
