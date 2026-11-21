@@ -1,12 +1,20 @@
 # Changelog
 
-## Unreleased (ledger #3377)
+## 0.12.0 (unreleased; core 0.4.0 cascade, ledger #3910)
 
-- Add `prefix_expand(&Scope, &Iri) -> Option<Iri>`: the full name a short one stands for
-  inside a scope's prefix corridors, so a composition can store the canonical name. It reads
-  the tables `prefix_space` has bound (each passing `prefix_check`) and rewrites with core's
+- Require `ikigai-core` 0.4.0 (scope opacity, structured denials). The public API now speaks
+  core 0.4 types, so this is a minor release: a consumer on core 0.3 cannot mix them.
+- Add `prefix_expand(&Kernel, &Scope, &Iri) -> Option<Iri>` (ledger #3377): the full name a
+  short one stands for inside a scope's prefix corridors, so a composition can store the
+  canonical name. It reads the tables `prefix_space` has bound (each passing `prefix_check`)
+  from `Kernel::topology_in`, the declared arrangement, and rewrites with core's
   `AliasTable::canonicalize`, so there is one implementation of the rules. `None` when the
-  corridors refuse the name, as resolution does.
+  corridors refuse the name, as resolution does, and `None` when a corridor that is not a
+  prefix table stands in the walk: core 0.4 keeps live corridors inside the kernel, so such
+  a corridor is never probed, and expansion can only decline, never name a different answer.
+- Tests: drop the `ikigai-engine` dev-dependency (still on core 0.3) and its one REPL test in
+  `tests/compose_arguments.rs`; it returns when engine moves to core 0.4. Conformance is
+  0.15.0.
 
 ## 0.11.0 (ledger #3280)
 

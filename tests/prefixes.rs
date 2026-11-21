@@ -392,7 +392,7 @@ fn changing_the_table_recomputes_what_was_composed_with_it() {
 #[test]
 fn prefix_expand_names_what_a_short_name_stands_for() {
     let f = fixture(RULES);
-    let expanded = ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")).unwrap();
+    let expanded = ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri("ui:row")).unwrap();
     assert_eq!(expanded, iri("urn:example:ui:row"));
     let short = f
         .issue_inside(source_request("ui:row", &[]), &Capability::root())
@@ -400,19 +400,19 @@ fn prefix_expand_names_what_a_short_name_stands_for() {
     assert_eq!(text(&f.kernel, expanded.as_str()).unwrap(), short);
     // A screen reference hidden by a prefix is recognizable once expanded.
     assert_eq!(
-        ikigai_fn::prefix_expand(&f.inside(), &iri("page:screen:name:home")).unwrap(),
+        ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri("page:screen:name:home")).unwrap(),
         iri("urn:example:data:screen:name:home")
     );
     // A full name, or one under no declared prefix, stands as written.
     for name in ["urn:example:ui:row", "evil:secret", "urn:kernel:topology"] {
         assert_eq!(
-            ikigai_fn::prefix_expand(&f.inside(), &iri(name)),
+            ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri(name)),
             Some(iri(name))
         );
     }
     // Outside the corridor nothing expands: there `ui:row` is only `ui:row`.
     assert_eq!(
-        ikigai_fn::prefix_expand(&Scope::empty(), &iri("ui:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &Scope::empty(), &iri("ui:row")),
         Some(iri("ui:row"))
     );
 }
@@ -433,7 +433,7 @@ fn prefix_expand_follows_the_table_in_force_and_ignores_a_refused_one() {
     sink(&f.kernel, "urn:example:store:prefixes", &table(&moved)).unwrap();
     block_on(f.prefixes.refresh(&f.kernel, &Capability::root())).unwrap();
     assert_eq!(
-        ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri("ui:row")),
         Some(iri("urn:example:elsewhere:row"))
     );
     // A refused table never binds, so it never expands: the one in force still does.
@@ -445,15 +445,47 @@ fn prefix_expand_follows_the_table_in_force_and_ignores_a_refused_one() {
     .unwrap();
     assert!(block_on(f.prefixes.refresh(&f.kernel, &Capability::root())).is_err());
     assert_eq!(
-        ikigai_fn::prefix_expand(&f.inside(), &iri("ui:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri("ui:row")),
         Some(iri("urn:example:elsewhere:row"))
     );
-    // A space that is not a prefix table (here, the host itself as a corridor) expands nothing.
+    // A space that is not a prefix table (here, the host itself as a corridor) expands
+    // nothing: it is opaque, and may answer the name itself, so expansion declines.
     let held = Arc::new(Mutex::new(BTreeMap::new()));
     let doors = Scope::empty().with(Arc::new(host(held)) as Arc<dyn Space>);
     assert_eq!(
-        ikigai_fn::prefix_expand(&doors, &iri("ui:row")),
-        Some(iri("ui:row"))
+        ikigai_fn::prefix_expand(&f.kernel, &doors, &iri("ui:row")),
+        None
+    );
+}
+
+/// Core 0.4 keeps live corridors inside the kernel, so a corridor that is not a prefix
+/// table is never probed. Ahead of the table that would rewrite the name it may or may not
+/// answer that name, and expansion cannot tell: it declines (`None`) rather than guess,
+/// even here, where the corridor binds nothing under `ui:` and resolution reaches the table.
+#[test]
+fn an_opaque_corridor_ahead_of_a_prefix_table_declines_to_expand() {
+    let f = fixture(RULES);
+    let opaque =
+        Arc::new(EndpointSpace::new().bind(Exact::new("urn:example:elsewhere"), html("other")));
+    let scope = f.inside().with(opaque as Arc<dyn Space>);
+    let short = block_on(f.kernel.issue_in(
+        source_request("ui:row", &[]),
+        &Capability::root(),
+        scope.clone(),
+    ))
+    .unwrap();
+    assert_eq!(
+        short.bytes,
+        text(&f.kernel, "urn:example:ui:row").unwrap().as_bytes()
+    );
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("ui:row")),
+        None
+    );
+    // The same table with no opaque corridor ahead of it expands.
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.kernel, &f.inside(), &iri("ui:row")),
+        Some(iri("urn:example:ui:row"))
     );
 }
 
@@ -468,7 +500,10 @@ fn prefix_expand_refuses_what_resolution_refuses() {
     let back = Arc::new(prefix_space("back", iri("urn:example:store:back")));
     block_on(back.refresh(&f.kernel, &Capability::root())).unwrap();
     let scope = f.inside().with(back as Arc<dyn Space>);
-    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("a:x")), None);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("a:x")),
+        None
+    );
     assert!(block_on(
         f.kernel
             .issue_in(source_request("a:x", &[]), &Capability::root(), scope)
@@ -493,7 +528,7 @@ fn prefix_expand_walks_every_corridor_as_resolution_does() {
         .with(outer as Arc<dyn Space>)
         .with(Arc::clone(&f.prefixes) as Arc<dyn Space>);
     assert_eq!(
-        ikigai_fn::prefix_expand(&scope, &iri("x:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("x:row")),
         Some(iri("urn:example:ui:row"))
     );
     let short = block_on(f.kernel.issue_in(
@@ -573,7 +608,7 @@ fn expansion_does_not_overflow_large_declared_hop_budgets() {
     block_on(huge.install(&f.kernel, &declaration)).unwrap();
     let scope = f.inside().with(huge as Arc<dyn Space>);
     assert_eq!(
-        ikigai_fn::prefix_expand(&scope, &iri("x:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("x:row")),
         Some(iri("urn:example:ui:row"))
     );
 }
@@ -595,7 +630,10 @@ fn expansion_refuses_a_name_answered_by_an_earlier_non_prefix_corridor() {
         text(&f.kernel, "urn:example:ui:row").unwrap().as_bytes()
     );
     // There is no table-derived full name for this corridor's own answer.
-    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("ui:row")), None);
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("ui:row")),
+        None
+    );
 }
 
 #[test]
@@ -623,9 +661,12 @@ fn expansion_stops_at_the_default_kernel_nesting_bound() {
     ))
     .unwrap_err();
     assert!(matches!(err, Error::DepthExceeded { .. }), "{err}");
-    assert_eq!(ikigai_fn::prefix_expand(&scope, &iri("p0:row")), None);
     assert_eq!(
-        ikigai_fn::prefix_expand(&scope, &iri("p1:row")),
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("p0:row")),
+        None
+    );
+    assert_eq!(
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("p1:row")),
         Some(iri("urn:example:ui:row"))
     );
 }
@@ -648,7 +689,7 @@ fn terminating_revisits_are_not_limited_by_the_sum_of_table_budgets() {
         text(&f.kernel, "urn:example:ui:row").unwrap().as_bytes()
     );
     assert_eq!(
-        ikigai_fn::prefix_expand(&scope, &iri(&name)),
+        ikigai_fn::prefix_expand(&f.kernel, &scope, &iri(&name)),
         Some(iri("urn:example:ui:row"))
     );
 }
@@ -719,7 +760,7 @@ fn an_inner_prefix_table_wins_over_an_outer_table_for_the_same_name() {
         scope.clone(),
     ))
     .unwrap();
-    let expanded = ikigai_fn::prefix_expand(&scope, &iri("ui:row")).unwrap();
+    let expanded = ikigai_fn::prefix_expand(&f.kernel, &scope, &iri("ui:row")).unwrap();
     assert_eq!(expanded, iri("urn:example:ui:row"));
     assert_eq!(
         resolved.bytes,

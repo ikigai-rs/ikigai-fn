@@ -198,13 +198,16 @@ names things with (`urn`, `http`, `https`, `file`, `data` and the rest of
 caller's own capability. `tests/prefixes.rs` holds the whole example.
 
 To store the full name a short one stands for (a name rendered outside the corridor,
-say), ask `prefix_expand(&scope, &name)`: `Some(urn:example:ui:row)` for `ui:row`
-inside the corridor, the name itself when no table in force rewrites it, and `None`
-when the corridors refuse it or an earlier corridor answers the source request itself.
-It reads the bound tables and rewrites with core's own alias walk. Expansion allows at
-most 64 root reissues (the default kernel nesting bound); it cannot account for a custom
-kernel limit or nesting already used by the caller. Other corridors are probed for
-source routing without invoking their endpoints; routing for other verbs may differ.
+say), ask `prefix_expand(&kernel, &scope, &name)`: `Some(urn:example:ui:row)` for
+`ui:row` inside the corridor, the name itself when no table in force rewrites it, and
+`None` when the corridors refuse it. It reads the bound tables from the kernel's declared
+arrangement (`kernel.topology_in(&scope)`), never from a live space, and rewrites with
+core's own alias walk. A corridor that is not a prefix table is opaque: this function
+cannot tell whether it answers the name and does not ask it, so when one stands in the
+walk it answers `None`. Before 0.12.0 such a corridor was probed with a source request;
+the change can only expand less than before, never to a different name. Expansion allows
+at most 64 root reissues (the default kernel nesting bound); it cannot account for a
+custom kernel limit or nesting already used by the caller.
 
 ## Escaping and links: `ikigai_fn::html`
 
