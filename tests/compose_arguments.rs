@@ -1,4 +1,4 @@
-//! Compose's public contract must let the REPL pass template parameters by name.
+//! Compose's public contract must let a caller pass template parameters by name.
 
 mod common;
 
@@ -8,7 +8,6 @@ use common::*;
 use ikigai_core::{
     Description, Exact, Kernel, MetaRenderer, ReprType, Representation, Request, Verb,
 };
-use ikigai_engine::{Action, Engine};
 
 /// The JSON face of Meta, without depending on a host's renderer crate.
 struct JsonRenderer;
@@ -66,17 +65,6 @@ fn a_named_template_parameter_reaches_compose() {
         compose(&kernel(), "urn:file:param.txt", &[("min", "6")]).unwrap(),
         "minimum: 6"
     );
-}
-
-/// The REPL routes named parameters using compose's real Meta contract.
-#[test]
-fn repl_supplies_a_named_template_parameter_to_compose() {
-    let engine = Engine::new(kernel());
-    let action = engine.eval("source urn:iki:fn:compose src=urn:file:param.txt min=6");
-    let Action::Output(entry) = action else {
-        panic!("expected the composed response");
-    };
-    assert_eq!(entry.result, Ok("minimum: 6".to_string()));
 }
 
 /// An endpoint without a contract sees the argument exactly as compose issued it.

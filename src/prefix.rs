@@ -72,9 +72,11 @@
 //!
 //! A composer that stores a name (an element's `kind`, rendered outside the corridor; a
 //! screen reference it checks for cycles) needs the full name a short one resolves to.
-//! [`prefix_expand`] reads the tables bound into the corridors of a [`Scope`] and walks
-//! them with core's own rewrite ([`AliasTable::canonicalize`]), so there is one
-//! implementation of the rules: the one resolution uses.
+//! [`prefix_expand`] reads the tables bound into the corridors of a [`Scope`], from the
+//! kernel's declared arrangement (`Kernel::topology_in`) and never from a live space, and
+//! walks them with core's own rewrite ([`AliasTable::canonicalize`]), so there is one
+//! implementation of the rules: the one resolution uses. A corridor that is not a prefix
+//! table is opaque to it: when one stands in the walk, it answers `None` rather than guess.
 //!
 //! # Changing the table
 //!
@@ -86,8 +88,8 @@
 use std::sync::Arc;
 
 use ikigai_core::{
-    AliasTable, Canonical, DynamicSpace, Iri, Registry, Request, Resolution, ResolveAt, RuleKind,
-    Scope, SpaceCheck, SpaceKind, Topology, Verb, DEFAULT_MAX_DEPTH,
+    AliasTable, Canonical, DynamicSpace, Iri, Kernel, Registry, ResolveAt, RuleKind, Scope,
+    SpaceCheck, SpaceKind, Topology, DEFAULT_MAX_DEPTH,
 };
 
 /// The schemes a prefix may not be declared under: the kernel's own (`urn`) and the ones
@@ -153,19 +155,27 @@ pub fn prefix_check() -> SpaceCheck {
 /// **The name `name` stands for inside `scope`**: the full name the prefix tables in force
 /// in its corridors rewrite it to, or `name` itself when none does. `None` when the
 /// corridors refuse it (a cycle, an over-long chain, a rewrite that is not an IRI), or
-/// when a corridor's answer cannot be described by a prefix table. See the bounds below.
+/// when a corridor that is not a prefix table stands in the walk. See the bounds below.
 ///
-/// The tables read are the ones [`prefix_space`] has BOUND (a refused table never binds,
-/// so it never expands), each passing [`prefix_check`] again here, and the rewrite is
-/// core's ([`AliasTable::canonicalize`]) over the rules as the bound space reports them.
+/// The corridors are read from the kernel's declared arrangement,
+/// [`Kernel::topology_in`]`(scope)`: innermost first, the root last unless the chain is
+/// severed. No live space is held and nothing is resolved. The tables read are the ones
+/// [`prefix_space`] has BOUND (a refused table never binds, so it never expands), each
+/// passing [`prefix_check`] again here, and the rewrite is core's
+/// ([`AliasTable::canonicalize`]) over the rules as the bound space reports them.
 /// Corridors are walked as resolution walks them: innermost first, the first table with
 /// a rule for the name rewriting it, and the rewritten name, re-issued inside the same
 /// corridors, walked again until none rewrites it.
 ///
-/// A corridor that is not a prefix table is probed for a `Source` request. If it answers,
-/// expansion returns `None`: its answer has no full name established by these tables.
-/// A corridor that misses is passed by. No endpoint is invoked. This function describes
-/// source names; a corridor may route other verbs differently.
+/// # An opaque corridor declines
+///
+/// A corridor that is not a prefix table (any other space, or a level) is opaque: its
+/// declared arrangement does not say whether it answers the name, and this function
+/// does not ask it. So when the walk reaches one, before the table that would rewrite
+/// the name or before the root that would answer it, expansion returns `None`. Up to
+/// core 0.3 such a corridor was probed with a `Source` request and passed by when it
+/// missed; now it never is, so this can expand LESS than before (`None` where a probe
+/// would have missed), never to a different name.
 ///
 /// At most [`DEFAULT_MAX_DEPTH`] root reissues are expanded, matching the default kernel
 /// nesting bound. A kernel with a larger bound may resolve a name this function refuses;
@@ -192,34 +202,32 @@ pub fn prefix_check() -> SpaceCheck {
 ///
 /// let row = Iri::parse("ui:row").unwrap();
 /// assert_eq!(
-///     ikigai_fn::prefix_expand(&inside, &row).unwrap().as_str(),
+///     ikigai_fn::prefix_expand(&kernel, &inside, &row).unwrap().as_str(),
 ///     "urn:example:ui:row"
 /// );
 /// // Outside the corridor the name is only what it says.
-/// assert_eq!(ikigai_fn::prefix_expand(&Scope::empty(), &row), Some(row));
+/// assert_eq!(ikigai_fn::prefix_expand(&kernel, &Scope::empty(), &row), Some(row));
 /// ```
-pub fn prefix_expand(scope: &Scope, name: &Iri) -> Option<Iri> {
+pub fn prefix_expand(kernel: &Kernel, scope: &Scope, name: &Iri) -> Option<Iri> {
+    // The chain as declared: corridors (and levels) innermost first, then the root unless
+    // severed. The root answers whatever reaches it, so only what stands before it is walked.
+    let mut layers = kernel.topology_in(scope).children;
+    if !scope.is_severed() {
+        layers.pop();
+    }
     // Keep opaque corridors in order: dropping one can invent a name for a different answer.
-    let corridors: Vec<_> = scope
-        .spaces()
-        .iter()
-        .rev()
-        .map(|space| (space, bound_table(&space.topology())))
-        .collect();
+    let corridors: Vec<Option<AliasTable>> = layers.iter().map(bound_table).collect();
     // A table can be revisited with a different name; its hop budget applies to each
     // canonicalization, not to the number of root reissues across the whole scope.
     let budget = DEFAULT_MAX_DEPTH as usize;
     let mut current = name.clone();
     let mut trail = vec![current.clone()];
-    // Include a terminal probe after the last allowed rewrite.
+    // Include a terminal pass after the last allowed rewrite.
     'walk: for rewritten in 0..=budget {
-        for (space, table) in &corridors {
+        for table in &corridors {
+            // An opaque corridor may answer the name: it cannot be described, so decline.
             let Some(table) = table else {
-                let request = Request::new(Verb::Source, current.clone());
-                if matches!(space.resolve(&request, scope), Resolution::Hit(_)) {
-                    return None;
-                }
-                continue;
+                return None;
             };
             match table.canonicalize(&current) {
                 Canonical::Direct => continue,
