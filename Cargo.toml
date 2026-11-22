@@ -39,6 +39,9 @@ html5ever = "0.40"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 
 [dev-dependencies]
+# Exercise REPL routing against this module's Meta contract. 0.6.0 is the engine on core
+# 0.4.0, so a test build links one core again (core 0.4 cascade restore, ledger #3935).
+ikigai-engine = "0.6.0"
 futures = "0.3"
 # `tests/markdown.rs` holds rendered fragments to an actual XML parser.
 roxmltree = "0.20"
@@ -47,7 +50,6 @@ roxmltree = "0.20"
 # and BODY-INPUTS by default, alongside the existing checks and per-check waivers.
 # 0.14.0 is the one built on core 0.3.0, the scoped content store (ledger #2965).
 # 0.15.0 is the one built on core 0.4.0 (scope opacity, structured denials; the cascade).
-# ikigai-engine is dropped until it moves to core 0.4 (wave 4): its REPL test returns then.
 ikigai-conformance = "0.15.0"
 # Only the tests: `tests/declared_views.rs` proves named views against core's builder
 # (`build`, `Registry`, `Topology::from_turtle`), which 0.1.83 added behind `declare`.

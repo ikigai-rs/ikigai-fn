@@ -636,8 +636,24 @@ fn expansion_refuses_a_name_answered_by_an_earlier_non_prefix_corridor() {
     );
 }
 
+/// Stack for the test below. It drives the kernel through `DEFAULT_MAX_DEPTH` nested
+/// reissues, and with core 0.4.1 an unoptimized build needs more than the 2 MiB a test
+/// thread gets by default before the kernel answers `DepthExceeded`. 4 MiB is enough;
+/// this gives twice that.
+const DEEP_NESTING_STACK: usize = 8 * 1024 * 1024;
+
 #[test]
 fn expansion_stops_at_the_default_kernel_nesting_bound() {
+    std::thread::Builder::new()
+        .name("expansion_stops_at_the_default_kernel_nesting_bound".into())
+        .stack_size(DEEP_NESTING_STACK)
+        .spawn(expansion_stops_at_the_default_kernel_nesting_bound_body)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+fn expansion_stops_at_the_default_kernel_nesting_bound_body() {
     let f = fixture(RULES);
     let mut scope = Scope::empty();
     for i in 0..=ikigai_core::DEFAULT_MAX_DEPTH {
