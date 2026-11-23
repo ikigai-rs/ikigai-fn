@@ -1418,6 +1418,7 @@ fn scan(text: &str, nodes: &AtomicUsize) -> Result<Vec<Segment>> {
     let b = text.as_bytes();
     let mut segments = Vec::new();
     let mut lit = String::new();
+    let mut ends = MarkerEnds::new(text);
     let mut i = 0;
     while i < b.len() {
         if b[i] == b'$' {
@@ -1429,7 +1430,7 @@ fn scan(text: &str, nodes: &AtomicUsize) -> Result<Vec<Segment>> {
             }
             if let Some(mode) = opens_marker(b, i) {
                 let brace = i + 2;
-                if let Some(close) = find_marker_end(text, brace) {
+                if let Some(close) = ends.find(brace) {
                     if !lit.is_empty() {
                         push_segment(&mut segments, Segment::Lit(std::mem::take(&mut lit)), nodes)?;
                     }
@@ -1663,41 +1664,125 @@ fn template_arg(inv: &Invocation<'_>, args: Args<'_>, name: &str) -> Result<Stri
     inv.inline_str(name).map(str::to_string)
 }
 
-/// The index of the `}` closing the marker whose `{` is at `brace`, skipping any
-/// `}` inside a `"…"` span (where a backslash escapes the next character) and any that closes a
-/// `{name}` argument inside the body. `None` if unterminated.
-fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
-    let b = text.as_bytes();
-    let mut i = brace + 1;
-    let mut in_quote = false;
-    let mut depth = 0usize;
-    while i < b.len() {
-        match b[i] {
-            b'\\' if in_quote => {
-                i += 1;
-                if i < b.len() {
-                    i += utf8_len(b[i]);
-                }
-            }
-            b'"' => {
-                in_quote = !in_quote;
-                i += 1;
-            }
-            b'{' if !in_quote => {
-                depth += 1;
-                i += 1;
-            }
-            b'}' if !in_quote => {
-                if depth == 0 {
-                    return Some(i);
-                }
-                depth -= 1;
-                i += 1;
-            }
-            c => i += utf8_len(c),
+/// Finds the `}` closing a marker whose `{` is at a given index, skipping any `}`
+/// inside a `"…"` span (where a backslash escapes the next character) and any that
+/// closes a `{name}` argument inside the body. `None` if unterminated.
+///
+/// One `MarkerEnds` serves every marker of one [`scan`], and remembers what it has
+/// settled, so the scan stays linear in the text's length. A plain left-to-right walk
+/// from each `$h{` would read to the end of the text at every unterminated opener,
+/// which is quadratic (ledger #4002). Each position is settled at most once in each of
+/// two modes: outside quotes, the index of the first `}` at brace depth zero; inside
+/// quotes, the index of the closing `"`. An unquoted `{` (or `"`) at `p` defers to the
+/// answer at `p + 1` in the unquoted (or quoted) mode and resumes, unquoted, just past
+/// it. The deferrals live on an explicit stack rather than the call stack, because a
+/// run of `{{{{…` would otherwise overflow it.
+struct MarkerEnds<'t> {
+    b: &'t [u8],
+    /// The settled answers by position, unquoted and quoted: [`UNSETTLED`], [`NO_END`]
+    /// or the index found. Allocated on the first lookup.
+    memo: [Vec<usize>; 2],
+    /// Positions settled, for the test that the scan is linear.
+    #[cfg(test)]
+    steps: usize,
+}
+
+const UNSETTLED: usize = usize::MAX;
+const NO_END: usize = usize::MAX - 1;
+const UNQUOTED: usize = 0;
+const QUOTED: usize = 1;
+
+/// A pending piece of work for [`MarkerEnds::end`].
+enum Step {
+    /// Settle the answer at this mode and position.
+    Eval(usize, usize),
+    /// Record the answer just found for this mode and position.
+    Store(usize, usize),
+    /// A `{…}` or `"…"` just closed at the answer: resume, unquoted, past it.
+    Resume,
+}
+
+impl<'t> MarkerEnds<'t> {
+    fn new(text: &'t str) -> Self {
+        MarkerEnds {
+            b: text.as_bytes(),
+            memo: [Vec::new(), Vec::new()],
+            #[cfg(test)]
+            steps: 0,
         }
     }
-    None
+
+    /// The index of the `}` closing the marker whose `{` is at `brace`.
+    fn find(&mut self, brace: usize) -> Option<usize> {
+        if self.memo[UNQUOTED].is_empty() {
+            self.memo = [
+                vec![UNSETTLED; self.b.len() + 1],
+                vec![UNSETTLED; self.b.len() + 1],
+            ];
+        }
+        match self.end(UNQUOTED, brace + 1) {
+            NO_END => None,
+            close => Some(close),
+        }
+    }
+
+    fn end(&mut self, mode: usize, start: usize) -> usize {
+        let b = self.b;
+        let len = b.len();
+        let mut stack = vec![Step::Eval(mode, start)];
+        // The answer of the work last finished; read by `Store` and `Resume`.
+        let mut answer = NO_END;
+        while let Some(step) = stack.pop() {
+            match step {
+                Step::Store(mode, p) => self.memo[mode][p] = answer,
+                Step::Resume => {
+                    if answer != NO_END {
+                        stack.push(Step::Eval(UNQUOTED, answer + 1));
+                    }
+                }
+                Step::Eval(mode, p) => {
+                    // Every walk ends at or before `len`; past it nothing closes.
+                    let p = p.min(len);
+                    let known = self.memo[mode][p];
+                    if known != UNSETTLED {
+                        answer = known;
+                        continue;
+                    }
+                    #[cfg(test)]
+                    {
+                        self.steps += 1;
+                    }
+                    stack.push(Step::Store(mode, p));
+                    if p == len {
+                        answer = NO_END;
+                        continue;
+                    }
+                    let c = b[p];
+                    match (mode, c) {
+                        (UNQUOTED, b'}') | (QUOTED, b'"') => answer = p,
+                        (UNQUOTED, b'{') => {
+                            stack.push(Step::Resume);
+                            stack.push(Step::Eval(UNQUOTED, p + 1));
+                        }
+                        (UNQUOTED, b'"') => {
+                            stack.push(Step::Resume);
+                            stack.push(Step::Eval(QUOTED, p + 1));
+                        }
+                        (QUOTED, b'\\') => {
+                            // The escaped character is skipped whole, whatever it is.
+                            let next = match b.get(p + 1) {
+                                Some(&e) => p + 1 + utf8_len(e),
+                                None => len,
+                            };
+                            stack.push(Step::Eval(QUOTED, next));
+                        }
+                        _ => stack.push(Step::Eval(mode, p + utf8_len(c))),
+                    }
+                }
+            }
+        }
+        answer
+    }
 }
 
 /// Split `s` on every `sep` outside quoted text and `<iri>` argument values.
@@ -2408,5 +2493,154 @@ mod compose_tests {
             "a $a{urn:iki:fn:toUpper?in=b} c $a{urn:iki:fn:toUpper?in=d} e",
         ));
         assert_eq!(rep.bytes, b"a B c D e".to_vec());
+    }
+}
+
+#[cfg(test)]
+mod marker_end_tests {
+    use super::*;
+
+    /// The marker-end scan as it was before ledger #4002: correct, but quadratic over
+    /// many unterminated openers. The reference for the differential test.
+    mod reference {
+        use super::utf8_len;
+
+        /// The index of the `}` closing the marker whose `{` is at `brace`, skipping any
+        /// `}` inside a `"…"` span (where a backslash escapes the next character) and any that closes a
+        /// `{name}` argument inside the body. `None` if unterminated.
+        pub(super) fn find_marker_end(text: &str, brace: usize) -> Option<usize> {
+            let b = text.as_bytes();
+            let mut i = brace + 1;
+            let mut in_quote = false;
+            let mut depth = 0usize;
+            while i < b.len() {
+                match b[i] {
+                    b'\\' if in_quote => {
+                        i += 1;
+                        if i < b.len() {
+                            i += utf8_len(b[i]);
+                        }
+                    }
+                    b'"' => {
+                        in_quote = !in_quote;
+                        i += 1;
+                    }
+                    b'{' if !in_quote => {
+                        depth += 1;
+                        i += 1;
+                    }
+                    b'}' if !in_quote => {
+                        if depth == 0 {
+                            return Some(i);
+                        }
+                        depth -= 1;
+                        i += 1;
+                    }
+                    c => i += utf8_len(c),
+                }
+            }
+            None
+        }
+    }
+
+    /// A small deterministic generator (xorshift64*), so the inputs repeat run to run.
+    struct Gen(u64);
+    impl Gen {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        }
+    }
+
+    const PIECES: [&str; 10] = ["{", "}", "\"", "\\", "$h{", "$r{", "a", "é", " ", "$$"];
+
+    /// Every `{` in `text` is looked up three ways, which must agree: the reference,
+    /// a fresh `MarkerEnds`, and one shared across the lookups in the given order.
+    fn check(text: &str, order: &mut dyn Iterator<Item = usize>) {
+        let mut shared = MarkerEnds::new(text);
+        for brace in order {
+            let want = reference::find_marker_end(text, brace);
+            assert_eq!(
+                MarkerEnds::new(text).find(brace),
+                want,
+                "{text:?} at {brace}"
+            );
+            assert_eq!(shared.find(brace), want, "{text:?} at {brace}, shared");
+        }
+    }
+
+    fn braces(text: &str) -> Vec<usize> {
+        text.bytes()
+            .enumerate()
+            .filter(|&(_, c)| c == b'{')
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn marker_ends_match_the_reference_on_every_short_input() {
+        // Every string of up to five pieces.
+        let mut texts = vec![String::new()];
+        for _ in 0..5 {
+            let mut longer = Vec::new();
+            for text in &texts {
+                for piece in PIECES {
+                    longer.push(format!("{text}{piece}"));
+                }
+            }
+            for text in &longer {
+                let positions = braces(text);
+                check(text, &mut positions.iter().copied());
+                check(text, &mut positions.iter().rev().copied());
+            }
+            texts = longer;
+        }
+    }
+
+    #[test]
+    fn marker_ends_match_the_reference_on_generated_inputs() {
+        let mut gen = Gen(0x4002_4002_4002_4002);
+        for _ in 0..3000 {
+            let len = (gen.next() % 80) as usize;
+            let text: String = (0..len)
+                .map(|_| PIECES[(gen.next() % PIECES.len() as u64) as usize])
+                .collect();
+            let mut positions = braces(&text);
+            check(&text, &mut positions.clone().into_iter());
+            // And in a shuffled order, so a lookup can land inside one already settled.
+            for i in (1..positions.len()).rev() {
+                positions.swap(i, (gen.next() % (i as u64 + 1)) as usize);
+            }
+            check(&text, &mut positions.into_iter());
+        }
+    }
+
+    #[test]
+    fn marker_end_scan_is_linear() {
+        // Counts positions settled, not time: at most two (one per mode) per byte,
+        // however many openers run off the end.
+        for unit in ["$h{", "$r{{", "$h{\"", "$h{\"\\\"{", "{$h{", "{{{{"] {
+            let text = unit.repeat(20_000);
+            let mut ends = MarkerEnds::new(&text);
+            for brace in braces(&text) {
+                assert_eq!(ends.find(brace), None, "{unit:?}");
+            }
+            assert!(
+                ends.steps <= 2 * (text.len() + 1),
+                "{unit:?}: {} steps over {} bytes",
+                ends.steps,
+                text.len()
+            );
+        }
+    }
+
+    #[test]
+    fn deep_braces_do_not_overflow_the_stack() {
+        let text = format!("$h{{{}", "{".repeat(1_000_000));
+        assert_eq!(MarkerEnds::new(&text).find(2), None);
+        let closed = format!("$h{{{}{}", "{".repeat(1_000_000), "}".repeat(1_000_001));
+        assert_eq!(MarkerEnds::new(&closed).find(2), Some(closed.len() - 1));
     }
 }

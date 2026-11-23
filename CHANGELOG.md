@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.1 (ledger #4002)
+
+- Scan template markers in linear time. Finding the `}` that closes a `$a{`, `$r{`, `$h{` or
+  `$j{` used to read to the end of the text at every opener that has none, so a template of
+  many unterminated openers filled in time quadratic in its length: 300 KB of `$h{` took
+  5.5 s. The node budget never saw it, because such a template is one literal node. The
+  scan now remembers what it has settled for each position, so a fill reads each byte a
+  bounded number of times; the same 300 KB fills in about 12 ms. The marker grammar and
+  every fill's output are unchanged: a differential test checks the new scan against the
+  old one on every short input and on generated ones.
+
 ## 0.12.0 (unreleased; core 0.4.0 cascade, ledger #3910)
 
 - Require `ikigai-core` 0.4.0 (scope opacity, structured denials). The public API now speaks
