@@ -13,6 +13,7 @@
 //! constructors and binds them at IRIs of its choosing, or mounts the whole
 //! library at its conventional IRIs with [`space`].
 
+pub mod aggregate;
 pub mod html;
 pub mod markdown;
 pub mod prefix;

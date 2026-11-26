@@ -272,7 +272,9 @@ a verbatim copy of and runs the same way. The two URI-template forms, `{name}` a
 `{+name}`, have their own file,
 [`tests/vectors/uri_template_vectors.json`](tests/vectors/uri_template_vectors.json): RFC
 6570's examples for those forms plus a few of ours, run by `tests/uri_template_vectors.rs`
-against both functions and against compose.
+against both functions and against compose. The aggregate count, ratio and percentage
+contract is pinned for ports by [`tests/vectors/count_vector.json`](tests/vectors/count_vector.json),
+run here by `tests/count_vector.rs`.
 
 ## Markdown from untrusted text: `ikigai_fn::markdown`
 
