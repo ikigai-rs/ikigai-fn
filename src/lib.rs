@@ -14,7 +14,6 @@
 //! library at its conventional IRIs with [`space`].
 
 pub mod aggregate;
-pub mod course_report;
 pub mod html;
 pub mod markdown;
 pub mod prefix;

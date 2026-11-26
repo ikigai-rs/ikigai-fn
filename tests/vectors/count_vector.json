@@ -9,8 +9,9 @@
   "ratio": [
     {"part": 0, "group": 0, "ratio": "fewer than 5", "percent": "fewer than 5", "ratio_text": "fewer than 5", "percent_text": "fewer than 5"},
     {"part": 2, "group": 4, "ratio": "fewer than 5", "percent": "fewer than 5", "ratio_text": "fewer than 5", "percent_text": "fewer than 5"},
-    {"part": 5, "group": 5, "ratio": 1.0, "percent": 100.0, "ratio_text": "1", "percent_text": "100%"},
-    {"part": 5, "group": 20, "ratio": 0.25, "percent": 25.0, "ratio_text": "0.25", "percent_text": "25%"},
+    {"part": 5, "group": 5, "ratio": 1.0, "percent": 100.0, "ratio_text": "1.000", "percent_text": "100.0%"},
+    {"part": 5, "group": 20, "ratio": 0.25, "percent": 25.0, "ratio_text": "0.250", "percent_text": "25.0%"},
+    {"part": 2, "group": 6, "ratio": 0.3333333333333333, "percent": 33.33333333333333, "ratio_text": "0.333", "percent_text": "33.3%"},
     {"part": 6, "group": 5, "ratio": null, "percent": null, "ratio_text": null, "percent_text": null}
   ]
 }

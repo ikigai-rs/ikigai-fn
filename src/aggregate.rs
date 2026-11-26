@@ -76,6 +76,15 @@ impl Serialize for Count {
 
 /// The fraction of a group that belongs to a subset, or a suppression message
 /// if the group is below the floor. A suppressed ratio retains neither input.
+/// Display rounds the binary floating-point value to three decimal places,
+/// with ties to even. JSON retains the unrounded number.
+///
+/// ```
+/// use ikigai_fn::aggregate::Ratio;
+/// let ratio = Ratio::new(2, 6).unwrap();
+/// assert_eq!(ratio.to_string(), "0.333");
+/// assert_eq!(ratio.percent().to_string(), "33.3%");
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Ratio(Option<f64>);
 
@@ -99,7 +108,10 @@ impl Ratio {
 
 impl fmt::Display for Ratio {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display(self.0, "", f)
+        match self.0 {
+            Some(value) => write!(f, "{value:.3}"),
+            None => f.write_str(&below_floor()),
+        }
     }
 }
 
@@ -110,13 +122,16 @@ impl Serialize for Ratio {
 }
 
 /// A percentage derived from a reportable ratio. Exact values display with a
-/// percent sign, but serialize as JSON numbers.
+/// percent sign and one decimal place (ties to even), but serialize as unrounded JSON numbers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Percent(Option<f64>);
 
 impl fmt::Display for Percent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        display(self.0, "%", f)
+        match self.0 {
+            Some(value) => write!(f, "{value:.1}%"),
+            None => f.write_str(&below_floor()),
+        }
     }
 }
 
