@@ -31,6 +31,8 @@ template](https://github.com/mgifford/ACCESSIBILITY.md) (MIT).
   shows, as one line of plain text.
 - **Plain-text answers** of the small functions (`toUpper`, `reverseList`, `split`, `wrap`,
   `greet`, `echo`, `digest`).
+- **Aggregate counts, ratios and percentages** (`ikigai_fn::aggregate`): the shared floor
+  is expressed in words, including when the figure appears as a string in JSON.
 - **Error messages** (`src/lib.rs`, `src/prefix.rs`): a marker that does not parse or does not
   resolve, a template or source that is not text, an `each` source that is not a flat JSON array,
   a `conditional` answer that is not a boolean, a refused prefix table.

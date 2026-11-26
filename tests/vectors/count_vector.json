@@ -1,0 +1,16 @@
+{
+  "floor": 5,
+  "count": [
+    {"count": 0, "json": "fewer than 5", "text": "fewer than 5"},
+    {"count": 4, "json": "fewer than 5", "text": "fewer than 5"},
+    {"count": 5, "json": 5, "text": "5"},
+    {"count": 12, "json": 12, "text": "12"}
+  ],
+  "ratio": [
+    {"part": 0, "group": 0, "ratio": "fewer than 5", "percent": "fewer than 5", "ratio_text": "fewer than 5", "percent_text": "fewer than 5"},
+    {"part": 2, "group": 4, "ratio": "fewer than 5", "percent": "fewer than 5", "ratio_text": "fewer than 5", "percent_text": "fewer than 5"},
+    {"part": 5, "group": 5, "ratio": 1.0, "percent": 100.0, "ratio_text": "1", "percent_text": "100%"},
+    {"part": 5, "group": 20, "ratio": 0.25, "percent": 25.0, "ratio_text": "0.25", "percent_text": "25%"},
+    {"part": 6, "group": 5, "ratio": null, "percent": null, "ratio_text": null, "percent_text": null}
+  ]
+}
